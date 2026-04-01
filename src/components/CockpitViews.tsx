@@ -1,12 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
-import type {
-  DriveHistoryMap,
-  DriveSnapshot,
-  DuplicateNameGroup,
-  Opportunity,
-  Snapshot,
-  StandardizationSuggestion,
-} from '../types'
+import { t, describeReportStyle } from '../i18n'
 import {
   formatBytes,
   formatDurationMs,
@@ -15,6 +8,16 @@ import {
   formatUpdatedAt,
   shortPath,
 } from '../lib/format'
+import type {
+  ClientSettings,
+  DriveHistoryMap,
+  DriveSnapshot,
+  DuplicateNameGroup,
+  LanguageMode,
+  Opportunity,
+  Snapshot,
+  StandardizationSuggestion,
+} from '../types'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -25,6 +28,7 @@ interface ViewCommonProps {
   snapshot: Snapshot
   activeDrive: DriveSnapshot | null
   history: DriveHistoryMap
+  language: LanguageMode
   rescanTarget: string
   onRescan: (letter: string) => void
 }
@@ -35,29 +39,42 @@ interface ChatViewProps {
   busy: boolean
   error: string
   messages: ChatMessage[]
+  language: LanguageMode
   onDraftChange: (value: string) => void
   onSubmit: () => void
+}
+
+interface SettingsViewProps {
+  language: LanguageMode
+  settings: ClientSettings
+  providerApiKeys: Record<string, string>
+  saveBusy: boolean
+  saveError: string
+  saveMessage: string
+  onThemeChange: (value: ClientSettings['ui']['themeMode']) => void
+  onLanguageChange: (value: LanguageMode) => void
+  onReportStyleChange: (value: ClientSettings['ui']['reportStyle']) => void
+  onProviderChange: (value: string) => void
+  onProviderFieldChange: (providerId: string, field: 'baseUrl' | 'model' | 'timeoutMs', value: string) => void
+  onProviderApiKeyChange: (providerId: string, value: string) => void
+  onToggleRuntime: (field: 'allowOfflineCache' | 'autoSaveOnlineCache', value: boolean) => void
+  onSave: () => void
 }
 
 export function OverviewView({
   snapshot,
   activeDrive,
   history,
+  language,
   rescanTarget,
   onRescan,
 }: ViewCommonProps) {
-  const topOpportunities = snapshot.crossDrive.topOpportunities.slice(0, 6)
-
   return (
-    <div className="view-grid view-grid-overview">
+    <div className="view-grid view-overview">
       <Panel
-        eyebrow="当前焦点"
-        title={activeDrive ? `${activeDrive.letter}: 数据中枢` : '等待盘符'}
-        detail={
-          activeDrive
-            ? `已用 ${formatBytes(activeDrive.usedBytes)} / ${formatBytes(activeDrive.totalBytes)}，上次扫描 ${formatUpdatedAt(activeDrive.lastScannedAt)}`
-            : '请选择一个盘符以查看详细分析。'
-        }
+        eyebrow={t(language, 'overviewHeadline')}
+        title={activeDrive ? `${activeDrive.letter}: ${t(language, 'currentDrive')}` : t(language, 'currentDrive')}
+        detail={t(language, 'overviewDetail')}
         action={
           activeDrive ? (
             <button
@@ -65,153 +82,151 @@ export function OverviewView({
               disabled={rescanTarget === activeDrive.letter}
               onClick={() => onRescan(activeDrive.letter)}
             >
-              {rescanTarget === activeDrive.letter ? '已加入队列' : '重新扫描'}
+              {rescanTarget === activeDrive.letter ? t(language, 'queued') : t(language, 'rescan')}
             </button>
           ) : null
         }
       >
         {activeDrive ? (
           <div className="hero-grid">
-            <div className="hero-card hero-card-main">
-              <UsageDial drive={activeDrive} />
+            <div className="hero-spotlight">
+              <UsageDial drive={activeDrive} language={language} />
               <div className="hero-copy">
-                <p>{activeDrive.analysisSummary || '等待 AI 对当前盘做出结构化解读。'}</p>
-                <div className="metric-row">
-                  <MetricChip label="扫描状态" value={labelScanStatus(activeDrive.scanStatus)} />
-                  <MetricChip label="AI 状态" value={labelAiStatus(activeDrive.aiStatus)} />
-                  <MetricChip label="扫描耗时" value={formatDurationMs(activeDrive.scanDurationMs)} />
-                  <MetricChip label="AI 耗时" value={formatDurationMs(activeDrive.aiDurationMs)} />
+                <h3>{activeDrive.analysisSummary || t(language, 'noData')}</h3>
+                <div className="metric-grid">
+                  <MetricChip label={t(language, 'aiStatusLabel')} value={labelAiStatus(activeDrive.aiStatus, language)} />
+                  <MetricChip label={t(language, 'scanElapsed')} value={formatDurationMs(activeDrive.scanDurationMs, language)} />
+                  <MetricChip label={t(language, 'provider')} value={snapshot.system.aiProvider || '--'} />
+                  <MetricChip label={t(language, 'freeSpace')} value={formatBytes(activeDrive.freeBytes, language)} />
                 </div>
               </div>
             </div>
-            <div className="hero-card">
-              <SectionTitle title="使用率趋势" detail="保留最近采样点，观察空间回落和增长速度。" />
-              <TrendChart points={history[activeDrive.letter] ?? []} />
-            </div>
+            <PanelBlock
+              title={t(language, 'opportunities')}
+              detail={snapshot.crossDrive.summary || t(language, 'noSuggestions')}
+            >
+              <OpportunityList items={snapshot.crossDrive.topOpportunities.slice(0, 4)} language={language} />
+            </PanelBlock>
           </div>
         ) : (
-          <EmptyState title="暂无盘符数据" detail="后端完成首次扫描后，这里会出现中央主视区分析。" />
+          <EmptyState language={language} title={t(language, 'noDrive')} detail={t(language, 'noData')} />
         )}
       </Panel>
 
-      <Panel eyebrow="跨盘机会" title="优先清理建议" detail="按估算收益和风险等级排序，先做最值的一批。">
-        <OpportunityList items={topOpportunities} />
+      <Panel eyebrow={t(language, 'duplicates')} title={t(language, 'duplicates')} detail={snapshot.crossDrive.summary}>
+        <DuplicateList items={snapshot.crossDrive.duplicateTopLevelNames.slice(0, 8)} language={language} />
       </Panel>
 
-      <Panel eyebrow="重复项" title="跨盘重复目录" detail="顶层名称重复通常意味着内容可以归并或重命名。">
-        <DuplicateList items={snapshot.crossDrive.duplicateTopLevelNames.slice(0, 8)} />
+      <Panel eyebrow={t(language, 'standards')} title={t(language, 'standards')} detail={describeReportStyle(language, snapshot.settings.ui.reportStyle)}>
+        <StandardList items={snapshot.crossDrive.standardizationSuggestions.slice(0, 8)} language={language} />
       </Panel>
 
-      <Panel eyebrow="标准化" title="目录治理建议" detail="AI 和规则会一起归纳更易维护的目录结构。">
-        <StandardList items={snapshot.crossDrive.standardizationSuggestions.slice(0, 8)} />
+      <Panel eyebrow={t(language, 'lastUpdated')} title={t(language, 'overviewHeadline')} detail={formatUpdatedAt(snapshot.generatedAt, language)}>
+        {activeDrive ? (
+          <TrendChart points={history[activeDrive.letter] ?? []} language={language} />
+        ) : (
+          <EmptyState language={language} title={t(language, 'noData')} detail={t(language, 'noDrive')} />
+        )}
       </Panel>
     </div>
   )
 }
 
-export function DriveView({ activeDrive, rescanTarget, onRescan }: ViewCommonProps) {
+export function DriveView({ activeDrive, language, rescanTarget, onRescan }: ViewCommonProps) {
   if (!activeDrive) {
-    return <EmptyState title="未选择盘符" detail="从左侧盘符栏选择目标后查看该盘的热点目录和大文件。" />
+    return <EmptyState language={language} title={t(language, 'noDrive')} detail={t(language, 'driveDetail')} />
   }
 
   return (
-    <div className="view-grid view-grid-drive">
+    <div className="view-grid view-drive">
       <Panel
-        eyebrow="盘面剖析"
-        title={`${activeDrive.letter}: 顶层热点`}
-        detail="单次遍历完成后，按大小呈现顶层目录与文件。"
+        eyebrow={t(language, 'topEntries')}
+        title={`${activeDrive.letter}: ${t(language, 'topEntries')}`}
+        detail={t(language, 'driveDetail')}
         action={
           <button
             className="ghost-button"
             disabled={rescanTarget === activeDrive.letter}
             onClick={() => onRescan(activeDrive.letter)}
           >
-            {rescanTarget === activeDrive.letter ? '已加入队列' : '重新扫描'}
+            {rescanTarget === activeDrive.letter ? t(language, 'queued') : t(language, 'rescan')}
           </button>
         }
       >
-        <EntryBars items={activeDrive.topEntries} emptyText="扫描完成后会出现顶层热点。" />
+        <EntryBars items={activeDrive.topEntries} language={language} emptyText={t(language, 'noData')} />
       </Panel>
 
-      <Panel eyebrow="聚焦目录" title="深度热点" detail="针对最重的几个目录继续汇总下一层，便于快速定位。">
-        <FocusDirectoryList directories={activeDrive.focusDirectories} />
+      <Panel eyebrow={t(language, 'focusAreas')} title={t(language, 'focusAreas')} detail={t(language, 'driveDetail')}>
+        <FocusDirectoryList directories={activeDrive.focusDirectories} language={language} />
       </Panel>
 
-      <Panel eyebrow="大文件" title="显著文件" detail="可直接识别镜像、安装包、录屏和压缩包等单文件大项。">
-        <FileList files={activeDrive.notableFiles} />
+      <Panel eyebrow={t(language, 'notableFiles')} title={t(language, 'notableFiles')} detail={t(language, 'driveDetail')}>
+        <FileList files={activeDrive.notableFiles} language={language} />
       </Panel>
     </div>
   )
 }
 
-export function ScanView({ snapshot, activeDrive }: ViewCommonProps) {
+export function ScanView({ snapshot, activeDrive, language }: ViewCommonProps) {
   const liveDrive = snapshot.drives.find((drive) => drive.scanStatus === 'scanning') ?? activeDrive
   const progress = liveDrive?.scanProgress
 
   return (
-    <div className="view-grid view-grid-scan">
-      <Panel eyebrow="扫描进程" title="实时流式进度" detail="扫描器按单次遍历聚合，不再重复递归同一棵目录树。">
+    <div className="view-grid view-scan">
+      <Panel eyebrow={t(language, 'scanHeadline')} title={t(language, 'scanHeadline')} detail={t(language, 'scanDetail')}>
         {liveDrive && progress ? (
-          <div className="scan-flow">
-            <div className="scan-flow__headline">
-              <strong>{liveDrive.letter}: 扫描链路</strong>
-              <StatusBadge tone={scanTone(liveDrive.scanStatus)}>{labelScanStatus(liveDrive.scanStatus)}</StatusBadge>
+          <div className="scan-stage">
+            <div className="scan-stage__title">
+              <strong>{liveDrive.letter}:</strong>
+              <StatusBadge tone={scanTone(liveDrive.scanStatus)}>{labelScanStatus(liveDrive.scanStatus, language)}</StatusBadge>
             </div>
-            <ProgressStrip percent={progress.percent} />
-            <div className="metric-row">
-              <MetricChip label="阶段" value={progress.phase || 'waiting'} />
-              <MetricChip label="根任务" value={`${progress.rootsCompleted}/${progress.rootsTotal || 0}`} />
-              <MetricChip label="文件" value={formatNumber(progress.filesVisited)} />
-              <MetricChip label="目录" value={formatNumber(progress.directoriesVisited)} />
-              <MetricChip label="已见字节" value={formatBytes(progress.bytesSeen)} />
-              <MetricChip label="耗时" value={formatDurationMs(progress.elapsedMs)} />
+            <ProgressStrip percent={progress.percent} language={language} />
+            <div className="metric-grid">
+              <MetricChip label={t(language, 'scanStage')} value={progress.phase || '--'} />
+              <MetricChip label={t(language, 'scanRoots')} value={`${progress.rootsCompleted}/${progress.rootsTotal || 0}`} />
+              <MetricChip label={t(language, 'scanFiles')} value={formatNumber(progress.filesVisited, language)} />
+              <MetricChip label={t(language, 'scanDirs')} value={formatNumber(progress.directoriesVisited, language)} />
+              <MetricChip label={t(language, 'scanBytes')} value={formatBytes(progress.bytesSeen, language)} />
+              <MetricChip label={t(language, 'scanElapsed')} value={formatDurationMs(progress.elapsedMs, language)} />
             </div>
-            <div className="scan-paths">
-              <PathLine label="当前根目录" value={progress.currentRoot ?? '等待扫描器取到任务'} />
-              <PathLine label="当前路径" value={progress.currentPath ?? '等待扫描器进入目录'} />
-            </div>
+            <PathLine label={t(language, 'currentRoot')} value={progress.currentRoot ?? '--'} />
+            <PathLine label={t(language, 'currentPath')} value={progress.currentPath ?? '--'} />
           </div>
         ) : (
-          <EmptyState title="扫描器空闲" detail="当前没有正在扫描的盘，右侧仍可查看各盘最近一次结果。" />
+          <EmptyState language={language} title={t(language, 'scanHeadline')} detail={t(language, 'noData')} />
         )}
       </Panel>
 
-      <Panel eyebrow="队列总览" title="各盘扫描状态" detail="查看哪些盘正在扫、哪些盘已准备好 AI 解读。">
-        <DriveStatusBoard drives={snapshot.drives} />
+      <Panel eyebrow={t(language, 'drivesRail')} title={t(language, 'drivesRail')} detail={t(language, 'scanDetail')}>
+        <DriveStatusBoard drives={snapshot.drives} language={language} />
       </Panel>
     </div>
   )
 }
 
-export function AiView({ snapshot, activeDrive }: ViewCommonProps) {
+export function AiView({ snapshot, activeDrive, language }: ViewCommonProps) {
   return (
-    <div className="view-grid view-grid-ai">
-      <Panel eyebrow="当前盘 AI" title={activeDrive ? `${activeDrive.letter}: AI 解读` : 'AI 解读'} detail="先给出摘要，再给出可执行建议。">
+    <div className="view-grid view-ai">
+      <Panel eyebrow={t(language, 'aiHeadline')} title={t(language, 'aiHeadline')} detail={t(language, 'aiDetail')}>
         {activeDrive ? (
           <>
-            <div className="summary-callout">
-              <StatusBadge tone={aiTone(activeDrive.aiStatus)}>{labelAiStatus(activeDrive.aiStatus)}</StatusBadge>
-              <p>{activeDrive.analysisSummary || 'AI 结果尚未返回，系统会先展示规则回退建议。'}</p>
+            <div className="summary-box">
+              <StatusBadge tone={aiTone(activeDrive.aiStatus)}>{labelAiStatus(activeDrive.aiStatus, language)}</StatusBadge>
+              <p>{activeDrive.analysisSummary || t(language, 'noSuggestions')}</p>
             </div>
-            <GuidanceList items={activeDrive.aiGuidance} emptyText="等待当前盘的 AI 结构化建议。" />
+            <GuidanceList items={activeDrive.aiGuidance} language={language} />
           </>
         ) : (
-          <EmptyState title="未选择盘符" detail="从左侧选择目标盘后查看 AI 对该盘的诊断。" />
+          <EmptyState language={language} title={t(language, 'noDrive')} detail={t(language, 'aiDetail')} />
         )}
       </Panel>
 
-      <Panel eyebrow="跨盘 AI" title="全局治理解读" detail="跨盘汇总更适合发现重复安装、缓存分散和目录碎片化。">
-        <p className="text-block">{snapshot.crossDrive.summary || '跨盘 AI 总结将在完成至少一轮盘面分析后出现。'}</p>
-        <StandardList items={snapshot.crossDrive.standardizationSuggestions.slice(0, 10)} />
-      </Panel>
-
-      <Panel eyebrow="AI 引擎" title="运行状态" detail="用于判断当前是否命中了 DeepSeek 结构化分析，或回退到了本地规则。">
-        <div className="metric-row">
-          <MetricChip label="引擎" value={snapshot.system.analysisEngine} />
-          <MetricChip label="提供方" value={snapshot.system.aiProvider || 'local'} />
-          <MetricChip label="模型" value={snapshot.system.aiModel ?? 'fallback'} />
-          <MetricChip label="状态" value={snapshot.system.aiStatus} />
-          <MetricChip label="最近完成" value={formatUpdatedAt(snapshot.system.aiLastAnalyzedAt)} />
+      <Panel eyebrow={t(language, 'provider')} title={snapshot.system.aiProvider || t(language, 'provider')} detail={snapshot.system.analysisEngine}>
+        <div className="metric-grid">
+          <MetricChip label={t(language, 'provider')} value={snapshot.system.aiProvider || '--'} />
+          <MetricChip label={t(language, 'providerModel')} value={snapshot.system.aiModel || '--'} />
+          <MetricChip label={t(language, 'aiStatusLabel')} value={snapshot.system.aiStatus} />
+          <MetricChip label={t(language, 'lastUpdated')} value={formatUpdatedAt(snapshot.system.aiLastAnalyzedAt, language)} />
         </div>
       </Panel>
     </div>
@@ -224,58 +239,174 @@ export function ChatView({
   busy,
   error,
   messages,
+  language,
   onDraftChange,
   onSubmit,
 }: ChatViewProps) {
-  const prompts = [
-    '这个盘最值得先删什么，按风险从低到高排一下。',
-    '这些热点目录里面哪些更像重复安装或缓存残留？',
-    '如果我要给这个盘做长期标准化整理，推荐怎样分层？',
-  ]
+  return (
+    <div className="view-grid view-chat">
+      <Panel eyebrow={t(language, 'chatHeadline')} title={drive ? `${drive.letter}: ${t(language, 'chatHeadline')}` : t(language, 'chatHeadline')} detail={t(language, 'chatDetail')}>
+        <div className="chat-shell">
+          <div className="chat-log">
+            {messages.length ? (
+              messages.map((message, index) => (
+                <article key={`${message.role}-${index}`} className={`chat-bubble chat-${message.role}`}>
+                  <strong>{message.role === 'assistant' ? 'AI' : language === 'en-US' ? 'You' : '你'}</strong>
+                  <p>{message.content}</p>
+                </article>
+              ))
+            ) : (
+              <EmptyState language={language} title={t(language, 'noChat')} detail={t(language, 'chatDetail')} />
+            )}
+          </div>
+          <textarea
+            className="chat-input"
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder={t(language, 'chatPlaceholder')}
+            rows={5}
+          />
+          <div className="chat-actions">
+            <span>{drive?.analysisSource === 'offline-cache' ? t(language, 'useCached') : t(language, 'chatDetail')}</span>
+            <button className="primary-button" disabled={busy || !draft.trim() || drive?.scanStatus !== 'ready'} onClick={onSubmit}>
+              {busy ? t(language, 'thinking') : t(language, 'sendQuestion')}
+            </button>
+          </div>
+          {error ? <p className="inline-error">{error}</p> : null}
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
+export function SettingsView(props: SettingsViewProps) {
+  const selected = props.settings.providers[props.settings.runtime.selectedProvider]
 
   return (
-    <div className="view-grid view-grid-chat">
-      <Panel eyebrow="对话入口" title={drive ? `${drive.letter}: AI 对话` : 'AI 对话'} detail="分析完成后，可以追问清理顺序、归档策略和目录标准化。">
-        {drive ? (
-          <div className="chat-layout">
-            <div className="chat-transcript">
-              {messages.length ? (
-                messages.map((message, index) => (
-                  <article key={`${message.role}-${index}`} className={`chat-bubble chat-bubble-${message.role}`}>
-                    <strong>{message.role === 'assistant' ? 'AI' : '你'}</strong>
-                    <p>{message.content}</p>
-                  </article>
-                ))
-              ) : (
-                <EmptyState title="还没有对话" detail="先发一个问题，AI 会基于当前盘的扫描结果回答。" />
-              )}
-            </div>
-            <div className="prompt-row">
-              {prompts.map((prompt) => (
-                <button key={prompt} className="prompt-pill" onClick={() => onDraftChange(prompt)}>
-                  {prompt}
-                </button>
+    <div className="view-grid view-settings">
+      <Panel eyebrow={t(props.language, 'settingsHeadline')} title={t(props.language, 'settingsHeadline')} detail={t(props.language, 'settingsDetail')}>
+        <div className="settings-grid">
+          <SettingGroup title={t(props.language, 'themeLabel')}>
+            <SegmentedPicker
+              value={props.settings.ui.themeMode}
+              onChange={(value) => props.onThemeChange(value as ClientSettings['ui']['themeMode'])}
+              options={[
+                { id: 'system', label: t(props.language, 'themeSystem') },
+                { id: 'dark', label: t(props.language, 'themeDark') },
+                { id: 'light', label: t(props.language, 'themeLight') },
+              ]}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'languageLabel')}>
+            <SegmentedPicker
+              value={props.settings.ui.language}
+              onChange={(value) => props.onLanguageChange(value as LanguageMode)}
+              options={[
+                { id: 'zh-CN', label: '中文' },
+                { id: 'en-US', label: props.language === 'en-US' ? 'English' : '英文' },
+              ]}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'reportStyleLabel')}>
+            <SegmentedPicker
+              value={props.settings.ui.reportStyle}
+              onChange={(value) => props.onReportStyleChange(value as ClientSettings['ui']['reportStyle'])}
+              options={[
+                { id: 'default', label: t(props.language, 'styleDefault') },
+                { id: 'gov-report', label: t(props.language, 'styleGov') },
+              ]}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'providerLabel')}>
+            <select
+              className="field"
+              value={props.settings.runtime.selectedProvider}
+              onChange={(event) => props.onProviderChange(event.target.value)}
+            >
+              {Object.values(props.settings.providers).map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {props.language === 'en-US' ? provider.names.en : provider.names.zh}
+                </option>
               ))}
-            </div>
-            <div className="chat-editor">
-              <textarea
-                value={draft}
-                onChange={(event) => onDraftChange(event.target.value)}
-                placeholder="例如：哪些目录适合迁移到其他盘，哪些更适合直接清缓存？"
-                rows={5}
-              />
-              <div className="chat-toolbar">
-                <span>{drive.aiStatus === 'ready' ? 'AI 已就绪，可继续追问。' : '建议等待该盘 AI 解读完成后再追问。'}</span>
-                <button className="primary-button" disabled={busy || !draft.trim() || drive.scanStatus !== 'ready'} onClick={onSubmit}>
-                  {busy ? 'AI 思考中...' : '发送问题'}
-                </button>
-              </div>
-              {error ? <p className="inline-error">{error}</p> : null}
-            </div>
+            </select>
+            <p className="field-hint">
+              {props.language === 'en-US' ? selected.description.en : selected.description.zh}
+            </p>
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'providerBaseUrl')}>
+            <input
+              className="field"
+              value={selected.baseUrl}
+              onChange={(event) => props.onProviderFieldChange(selected.id, 'baseUrl', event.target.value)}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'providerModel')}>
+            <input
+              className="field"
+              value={selected.model}
+              onChange={(event) => props.onProviderFieldChange(selected.id, 'model', event.target.value)}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'providerTimeout')}>
+            <input
+              className="field"
+              value={String(selected.timeoutMs)}
+              onChange={(event) => props.onProviderFieldChange(selected.id, 'timeoutMs', event.target.value)}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'providerApiKey')}>
+            <input
+              className="field"
+              type="password"
+              placeholder={selected.apiKeySet ? selected.apiKeyPreview : ''}
+              value={props.providerApiKeys[selected.id] ?? ''}
+              onChange={(event) => props.onProviderApiKeyChange(selected.id, event.target.value)}
+            />
+            <p className="field-hint">{t(props.language, 'providerApiKeyHint')}</p>
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'offlineCache')}>
+            <ToggleRow
+              checked={props.settings.runtime.allowOfflineCache}
+              onChange={(value) => props.onToggleRuntime('allowOfflineCache', value)}
+            />
+          </SettingGroup>
+
+          <SettingGroup title={t(props.language, 'autoSaveCache')}>
+            <ToggleRow
+              checked={props.settings.runtime.autoSaveOnlineCache}
+              onChange={(value) => props.onToggleRuntime('autoSaveOnlineCache', value)}
+            />
+          </SettingGroup>
+        </div>
+
+        <div className="settings-footer">
+          <div className="settings-notes">
+            {props.settings.setupRequired ? <p>{t(props.language, 'setupRequired')}</p> : null}
+            <p>{`${t(props.language, 'cachedAt')}: ${props.settings.cachedAt ? formatUpdatedAt(props.settings.cachedAt, props.language) : t(props.language, 'notCached')}`}</p>
           </div>
-        ) : (
-          <EmptyState title="未选择盘符" detail="先选择一个盘，再和 AI 围绕该盘做追问式分析。" />
-        )}
+          <button className="primary-button" disabled={props.saveBusy} onClick={props.onSave}>
+            {props.saveBusy ? t(props.language, 'thinking') : t(props.language, 'saveSettings')}
+          </button>
+        </div>
+
+        {props.saveMessage ? <p className="inline-success">{props.saveMessage}</p> : null}
+        {props.saveError ? <p className="inline-error">{props.saveError}</p> : null}
+      </Panel>
+
+      <Panel eyebrow={t(props.language, 'localFiles')} title={t(props.language, 'localFiles')} detail={t(props.language, 'useCached')}>
+        <div className="stack-list">
+          <PathCard label={t(props.language, 'localSettingsPath')} value={props.settings.localPaths.settingsPath} />
+          <PathCard label={t(props.language, 'localSecretsPath')} value={props.settings.localPaths.secretsPath} />
+          <PathCard label={t(props.language, 'localCachePath')} value={props.settings.localPaths.cachePath} />
+        </div>
       </Panel>
     </div>
   )
@@ -289,8 +420,8 @@ export function Panel(props: {
   children: ReactNode
 }) {
   return (
-    <section className="panel-shell">
-      <header className="panel-header">
+    <section className="panel">
+      <header className="panel-head">
         <div>
           <p className="panel-eyebrow">{props.eyebrow}</p>
           <h2>{props.title}</h2>
@@ -312,11 +443,24 @@ export function MetricChip({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function StatusBadge({ tone, children }: { tone: 'critical' | 'warning' | 'stable' | 'info'; children: ReactNode }) {
+export function StatusBadge({
+  tone,
+  children,
+}: {
+  tone: 'critical' | 'warning' | 'stable' | 'info'
+  children: ReactNode
+}) {
   return <span className={`status-badge tone-${tone}`}>{children}</span>
 }
 
-export function EmptyState({ title, detail }: { title: string; detail: string }) {
+export function EmptyState({
+  title,
+  detail,
+}: {
+  language: LanguageMode
+  title: string
+  detail: string
+}) {
   return (
     <div className="empty-state">
       <strong>{title}</strong>
@@ -325,39 +469,93 @@ export function EmptyState({ title, detail }: { title: string; detail: string })
   )
 }
 
-function SectionTitle({ title, detail }: { title: string; detail: string }) {
+function PanelBlock({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
   return (
-    <div className="section-title">
+    <article className="panel-block">
+      <div className="panel-block__head">
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+      <div>{children}</div>
+    </article>
+  )
+}
+
+function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="setting-group">
       <strong>{title}</strong>
-      <span>{detail}</span>
+      <div>{children}</div>
     </div>
   )
 }
 
-function UsageDial({ drive }: { drive: DriveSnapshot }) {
+function SegmentedPicker(props: {
+  value: string
+  onChange: (value: string) => void
+  options: Array<{ id: string; label: string }>
+}) {
+  return (
+    <div className="segmented-picker">
+      {props.options.map((option) => (
+        <button
+          key={option.id}
+          className={`segment ${props.value === option.id ? 'is-active' : ''}`}
+          onClick={() => props.onChange(option.id)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function ToggleRow({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <button className={`toggle ${checked ? 'is-active' : ''}`} onClick={() => onChange(!checked)}>
+      <span />
+    </button>
+  )
+}
+
+function PathCard({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="stack-card">
+      <strong>{label}</strong>
+      <code>{shortPath(value)}</code>
+    </article>
+  )
+}
+
+function UsageDial({ drive, language }: { drive: DriveSnapshot; language: LanguageMode }) {
   const style = {
     '--usage-angle': `${Math.max(8, Math.min(100, drive.usePercent)) * 3.6}deg`,
-    '--drive-accent': pickDriveColor(drive.letter),
   } as CSSProperties
 
   return (
     <div className="usage-dial" style={style}>
       <div className="usage-dial__inner">
         <span>{drive.letter}:</span>
-        <strong>{formatPercent(drive.usePercent)}</strong>
-        <small>剩余 {formatBytes(drive.freeBytes)}</small>
+        <strong>{formatPercent(drive.usePercent, language)}</strong>
+        <small>{formatBytes(drive.freeBytes, language)}</small>
       </div>
     </div>
   )
 }
 
-function TrendChart({ points }: { points: DriveHistoryMap[string] | undefined }) {
+function TrendChart({
+  points,
+  language,
+}: {
+  points: DriveHistoryMap[string] | undefined
+  language: LanguageMode
+}) {
   if (!points?.length) {
-    return <EmptyState title="趋势数据不足" detail="等待更多轮快照采样后，这里会出现容量变化曲线。" />
+    return <EmptyState language={language} title={t(language, 'noData')} detail={t(language, 'overviewDetail')} />
   }
 
   const width = 420
-  const height = 150
+  const height = 160
   const values = points.map((point) => point.usedPercent)
   const max = Math.max(...values, 1)
   const min = Math.min(...values, 0)
@@ -365,42 +563,42 @@ function TrendChart({ points }: { points: DriveHistoryMap[string] | undefined })
   const path = points
     .map((point, index) => {
       const x = (index / Math.max(points.length - 1, 1)) * width
-      const y = height - ((point.usedPercent - min) / range) * (height - 18) - 9
+      const y = height - ((point.usedPercent - min) / range) * (height - 24) - 12
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
     })
     .join(' ')
 
   return (
     <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-      <path className="trend-chart__grid" d={`M 0 ${height - 1} L ${width} ${height - 1}`} />
-      <path className="trend-chart__line" d={path} />
+      <path className="trend-axis" d={`M 0 ${height - 1} L ${width} ${height - 1}`} />
+      <path className="trend-line" d={path} />
     </svg>
   )
 }
 
-function ProgressStrip({ percent }: { percent: number }) {
+function ProgressStrip({ percent, language }: { percent: number; language: LanguageMode }) {
   return (
     <div className="progress-strip">
-      <div className="progress-strip__bar" style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />
-      <span>{formatPercent(percent)}</span>
+      <div className="progress-strip__bar" style={{ width: `${Math.max(4, Math.min(100, percent))}%` }} />
+      <span>{formatPercent(percent, language)}</span>
     </div>
   )
 }
 
-function OpportunityList({ items }: { items: Opportunity[] }) {
+function OpportunityList({ items, language }: { items: Opportunity[]; language: LanguageMode }) {
   if (!items.length) {
-    return <EmptyState title="暂未生成机会项" detail="随着扫描和 AI 解读完成，这里会自动出现可执行建议。" />
+    return <EmptyState language={language} title={t(language, 'noOpportunities')} detail={t(language, 'overviewDetail')} />
   }
 
   return (
     <div className="stack-list">
       {items.map((item) => (
         <article key={item.id} className="stack-card">
-          <div className="stack-card__head">
+          <div className="stack-head">
             <StatusBadge tone={severityTone(item.severity)}>{item.severity}</StatusBadge>
-            <strong>{item.title}</strong>
-            <span>{formatBytes(item.estimatedBytes)}</span>
+            <span>{formatBytes(item.estimatedBytes, language)}</span>
           </div>
+          <strong>{item.title}</strong>
           <p>{item.action}</p>
           <code>{shortPath(item.path)}</code>
         </article>
@@ -409,18 +607,18 @@ function OpportunityList({ items }: { items: Opportunity[] }) {
   )
 }
 
-function DuplicateList({ items }: { items: DuplicateNameGroup[] }) {
+function DuplicateList({ items, language }: { items: DuplicateNameGroup[]; language: LanguageMode }) {
   if (!items.length) {
-    return <EmptyState title="重复项不明显" detail="当前没有显著的跨盘顶层重名目录。" />
+    return <EmptyState language={language} title={t(language, 'noDuplicates')} detail={t(language, 'duplicates')} />
   }
 
   return (
     <div className="stack-list">
       {items.map((item) => (
         <article key={`${item.name}-${item.combinedBytes}`} className="stack-card">
-          <div className="stack-card__head">
+          <div className="stack-head">
             <strong>{item.name}</strong>
-            <span>{formatBytes(item.combinedBytes)}</span>
+            <span>{formatBytes(item.combinedBytes, language)}</span>
           </div>
           <p>{item.drives.join(' / ')}</p>
           <code>{shortPath(item.paths[0] ?? item.name)}</code>
@@ -430,9 +628,9 @@ function DuplicateList({ items }: { items: DuplicateNameGroup[] }) {
   )
 }
 
-function StandardList({ items }: { items: StandardizationSuggestion[] }) {
+function StandardList({ items, language }: { items: StandardizationSuggestion[]; language: LanguageMode }) {
   if (!items.length) {
-    return <EmptyState title="尚未生成标准化建议" detail="完成更多盘面分析后会产生更稳定的治理建议。" />
+    return <EmptyState language={language} title={t(language, 'noSuggestions')} detail={t(language, 'standards')} />
   }
 
   return (
@@ -447,21 +645,29 @@ function StandardList({ items }: { items: StandardizationSuggestion[] }) {
   )
 }
 
-function EntryBars({ items, emptyText }: { items: DriveSnapshot['topEntries']; emptyText: string }) {
+function EntryBars({
+  items,
+  language,
+  emptyText,
+}: {
+  items: DriveSnapshot['topEntries']
+  language: LanguageMode
+  emptyText: string
+}) {
   if (!items.length) {
-    return <EmptyState title="暂无顶层热点" detail={emptyText} />
+    return <EmptyState language={language} title={t(language, 'noData')} detail={emptyText} />
   }
 
   const max = Math.max(...items.map((item) => item.sizeBytes), 1)
   return (
-    <div className="bars">
+    <div className="stack-list">
       {items.map((item) => (
-        <article key={item.path} className="bar-row">
-          <div className="bar-row__meta">
+        <article key={item.path} className="bar-card">
+          <div className="stack-head">
             <strong>{item.name}</strong>
-            <span>{formatBytes(item.sizeBytes)}</span>
+            <span>{formatBytes(item.sizeBytes, language)}</span>
           </div>
-          <div className="bar-row__track">
+          <div className="bar-track">
             <span style={{ width: `${(item.sizeBytes / max) * 100}%` }} />
           </div>
           <code>{shortPath(item.path)}</code>
@@ -471,25 +677,31 @@ function EntryBars({ items, emptyText }: { items: DriveSnapshot['topEntries']; e
   )
 }
 
-function FocusDirectoryList({ directories }: { directories: DriveSnapshot['focusDirectories'] }) {
+function FocusDirectoryList({
+  directories,
+  language,
+}: {
+  directories: DriveSnapshot['focusDirectories']
+  language: LanguageMode
+}) {
   if (!directories.length) {
-    return <EmptyState title="暂无聚焦目录" detail="扫描器会自动挑选最重的几个目录并继续聚合下一层。" />
+    return <EmptyState language={language} title={t(language, 'noData')} detail={t(language, 'focusAreas')} />
   }
 
   return (
     <div className="stack-list">
       {directories.map((directory) => (
         <article key={directory.path} className="stack-card">
-          <div className="stack-card__head">
+          <div className="stack-head">
             <strong>{directory.name}</strong>
-            <span>{formatBytes(directory.sizeBytes)}</span>
+            <span>{formatBytes(directory.sizeBytes, language)}</span>
           </div>
           <code>{shortPath(directory.path)}</code>
           <div className="sub-list">
             {directory.children.map((child) => (
-              <div key={child.path} className="sub-list__item">
+              <div key={child.path} className="sub-row">
                 <span>{child.name}</span>
-                <span>{formatBytes(child.sizeBytes)}</span>
+                <span>{formatBytes(child.sizeBytes, language)}</span>
               </div>
             ))}
           </div>
@@ -499,20 +711,20 @@ function FocusDirectoryList({ directories }: { directories: DriveSnapshot['focus
   )
 }
 
-function FileList({ files }: { files: DriveSnapshot['notableFiles'] }) {
+function FileList({ files, language }: { files: DriveSnapshot['notableFiles']; language: LanguageMode }) {
   if (!files.length) {
-    return <EmptyState title="暂无显著文件" detail="大文件会在扫描结果里单独列出。" />
+    return <EmptyState language={language} title={t(language, 'noData')} detail={t(language, 'notableFiles')} />
   }
 
   return (
     <div className="stack-list">
       {files.map((file) => (
         <article key={file.path} className="stack-card">
-          <div className="stack-card__head">
+          <div className="stack-head">
             <strong>{file.name}</strong>
-            <span>{formatBytes(file.sizeBytes)}</span>
+            <span>{formatBytes(file.sizeBytes, language)}</span>
           </div>
-          <p>{file.extension || '文件'}</p>
+          <p>{file.extension || file.type}</p>
           <code>{shortPath(file.path)}</code>
         </article>
       ))}
@@ -520,19 +732,19 @@ function FileList({ files }: { files: DriveSnapshot['notableFiles'] }) {
   )
 }
 
-function GuidanceList({ items, emptyText }: { items: DriveSnapshot['aiGuidance']; emptyText: string }) {
+function GuidanceList({ items, language }: { items: DriveSnapshot['aiGuidance']; language: LanguageMode }) {
   if (!items.length) {
-    return <EmptyState title="AI 指导未返回" detail={emptyText} />
+    return <EmptyState language={language} title={t(language, 'noSuggestions')} detail={t(language, 'aiDetail')} />
   }
 
   return (
     <div className="stack-list">
       {items.map((item, index) => (
         <article key={`${item.title}-${index}`} className="stack-card">
-          <div className="stack-card__head">
+          <div className="stack-head">
             <StatusBadge tone={guidanceTone(item.tone)}>{item.tone}</StatusBadge>
-            <strong>{item.title}</strong>
           </div>
+          <strong>{item.title}</strong>
           <p>{item.detail}</p>
         </article>
       ))}
@@ -540,19 +752,18 @@ function GuidanceList({ items, emptyText }: { items: DriveSnapshot['aiGuidance']
   )
 }
 
-function DriveStatusBoard({ drives }: { drives: Snapshot['drives'] }) {
+function DriveStatusBoard({ drives, language }: { drives: Snapshot['drives']; language: LanguageMode }) {
   return (
-    <div className="drive-status-board">
+    <div className="stack-list">
       {drives.map((drive) => (
-        <article key={drive.letter} className="drive-status-card">
-          <div className="drive-status-card__head">
+        <article key={drive.letter} className="stack-card">
+          <div className="stack-head">
             <strong>{drive.letter}:</strong>
-            <StatusBadge tone={scanTone(drive.scanStatus)}>{labelScanStatus(drive.scanStatus)}</StatusBadge>
+            <StatusBadge tone={scanTone(drive.scanStatus)}>{labelScanStatus(drive.scanStatus, language)}</StatusBadge>
           </div>
-          <div className="metric-row">
-            <MetricChip label="占用率" value={formatPercent(drive.usePercent)} />
-            <MetricChip label="扫描" value={formatDurationMs(drive.scanDurationMs)} />
-            <MetricChip label="AI" value={labelAiStatus(drive.aiStatus)} />
+          <div className="metric-grid compact">
+            <MetricChip label={t(language, 'freeSpace')} value={formatBytes(drive.freeBytes, language)} />
+            <MetricChip label={t(language, 'aiStatusLabel')} value={labelAiStatus(drive.aiStatus, language)} />
           </div>
         </article>
       ))}
@@ -567,26 +778,6 @@ function PathLine({ label, value }: { label: string; value: string }) {
       <code>{shortPath(value)}</code>
     </div>
   )
-}
-
-function pickDriveColor(letter: string) {
-  const colors = ['#62e5ff', '#79a2ff', '#a586ff', '#36d6c5', '#4f8bff', '#7ce7ff']
-  return colors[letter.charCodeAt(0) % colors.length]
-}
-
-function labelScanStatus(status: string) {
-  if (status === 'ready') return '已完成'
-  if (status === 'scanning') return '扫描中'
-  if (status === 'error') return '异常'
-  return '排队中'
-}
-
-function labelAiStatus(status: string) {
-  if (status === 'ready') return '已完成'
-  if (status === 'analyzing') return '分析中'
-  if (status === 'error') return '异常'
-  if (status === 'queued') return '排队中'
-  return '待启动'
 }
 
 function severityTone(severity: string) {
@@ -614,4 +805,20 @@ function aiTone(status: string) {
   if (status === 'analyzing') return 'info'
   if (status === 'error') return 'critical'
   return 'warning'
+}
+
+function labelScanStatus(status: string, language: LanguageMode) {
+  if (status === 'ready') return t(language, 'scanReady')
+  if (status === 'scanning') return t(language, 'scanRunning')
+  if (status === 'error') return t(language, 'scanError')
+  return t(language, 'scanQueued')
+}
+
+function labelAiStatus(status: string, language: LanguageMode) {
+  if (status === 'disabled') return t(language, 'aiDisabled')
+  if (status === 'ready') return t(language, 'aiReady')
+  if (status === 'analyzing') return t(language, 'aiRunning')
+  if (status === 'error') return t(language, 'aiError')
+  if (status === 'queued') return t(language, 'aiQueued')
+  return t(language, 'aiIdle')
 }

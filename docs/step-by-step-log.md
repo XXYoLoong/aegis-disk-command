@@ -45,3 +45,23 @@ Aegis Disk Command
 - Key result: repository `origin/main` now includes the fast scanner, asynchronous AI pipeline, multi-view cockpit UI, bilingual READMEs with badges, and the updated process log under commit `b91edf9`.
 - Verification: `git status -sb` showed the branch one commit ahead before push and clean after push; `git push origin main` completed successfully.
 - Final delivery state: local and remote repositories are synchronized, and the project is ready for the next round of feature work or runtime tuning.
+
+### 2026-04-02 Round 7
+- Request received: make the project portable across Windows machines, move machine-specific configuration out of the public repo, support multiple AI providers with a settings UI, add offline fallback, add light and dark themes with system-follow mode, support bilingual UI, add a governance-report narrative style, and improve the logging workflow into a summary log plus a detailed decision log.
+- Current action: audited the current repository structure, confirmed there was no active Figma MCP connection in the environment, reviewed the existing scan and AI pipeline, and checked official provider documentation paths before refactoring.
+- Key result: decided to replace single-provider runtime assumptions with a local store under `.aegis/`, a provider catalog, and a new settings surface; also decided to keep `docs/step-by-step-log.md` as the detailed log and add a new `docs/change-highlights.md` as the quick overview log.
+- Decision or adjustment: because no Figma connection was available, the redesign was implemented directly in code first while preserving a structure that can be synced to Figma later.
+- Next step: implement provider presets, local private settings, offline cache persistence, UI theme/language switches, and the new settings page.
+
+### 2026-04-02 Round 8
+- Current action: added `server/provider-catalog.mjs`, `server/local-store.mjs`, and `server/fallback-analysis.mjs`; rewrote `server/ai-analysis.mjs` and `server/index.mjs`; rebuilt the frontend around `src/i18n.ts`, new types, a new settings view, and restrained light/dark themes; refreshed both READMEs; added new screenshots; and introduced `docs/change-highlights.md`.
+- Key result: the app now stores private machine-specific settings in `.aegis/settings.json`, private API secrets in `.aegis/local.env`, and the latest online analysis snapshot in `.aegis/last-online-cache.json`; it supports configurable provider presets for DeepSeek, Qwen, Zhipu, Doubao, Kimi, OpenAI, Google, Claude, OpenRouter, and SiliconFlow; and it exposes settings through `/api/settings` and `/api/providers`.
+- Verification: `node --check server/index.mjs`, `node --check server/ai-analysis.mjs`, `npm run lint`, and `npm run build` all passed; `/api/settings` returned the new local private runtime structure; `/api/providers` returned the ordered preset catalog; screenshots of the redesigned overview and settings pages were captured under `docs/screenshots/`.
+- Decision or adjustment: keep `.env.example` for compatibility, but make `.aegis/` the preferred runtime path for actual local setup; keep DeepSeek as the default provider while allowing users to switch to other providers in the UI.
+- Next step: update the global `process-log-sync` skill to reflect the new dual-log convention, then commit and push the full change set.
+
+### 2026-04-02 Round 9
+- Current action: refined the UI to reduce Chinese-mode mixed-language leakage, remapped provider display names through the localized provider catalog on the frontend, added the summary log file, and updated the global `F:\.codex\skills\process-log-sync\SKILL.md` workflow to document dual-log mode.
+- Key result: the project now has both `docs/change-highlights.md` and `docs/step-by-step-log.md`; the global logging skill now explains when and how to maintain both files; and the Chinese settings surface now uses cleaner localized labels for language choice and AI status.
+- Verification: re-ran `npm run lint`, `npm run build`, and a live `POST /api/settings` round-trip against a temporary local server instance; the settings endpoint saved and returned the expected `.aegis` paths and provider catalog state.
+- Final delivery state: the repository is ready for commit and push, with code, docs, screenshots, and local logging workflow rules all updated to the new standard.

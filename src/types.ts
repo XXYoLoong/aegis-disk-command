@@ -1,6 +1,9 @@
 export type HealthLevel = 'critical' | 'warning' | 'stable'
 export type ScanState = 'queued' | 'scanning' | 'ready' | 'error'
 export type AiState = 'idle' | 'queued' | 'analyzing' | 'ready' | 'error'
+export type UiThemeMode = 'system' | 'dark' | 'light'
+export type LanguageMode = 'zh-CN' | 'en-US'
+export type ReportStyle = 'default' | 'gov-report'
 
 export interface Entry {
   name: string
@@ -98,6 +101,10 @@ export interface SystemSnapshot {
   aiStatus: string
   aiLastError: string | null
   aiLastAnalyzedAt: string | null
+  selectedProvider: string
+  language: LanguageMode
+  reportStyle: ReportStyle
+  setupRequired: boolean
 }
 
 export interface DuplicateNameGroup {
@@ -119,11 +126,47 @@ export interface CrossDriveSnapshot {
   summary: string
 }
 
+export interface ProviderClientConfig {
+  id: string
+  names: { zh: string; en: string }
+  description: { zh: string; en: string }
+  docsUrl: string
+  protocol: string
+  baseUrl: string
+  model: string
+  timeoutMs: number
+  apiKeySet: boolean
+  apiKeyPreview: string
+}
+
+export interface ClientSettings {
+  ui: {
+    themeMode: UiThemeMode
+    language: LanguageMode
+    reportStyle: ReportStyle
+  }
+  runtime: {
+    selectedProvider: string
+    allowOfflineCache: boolean
+    autoSaveOnlineCache: boolean
+  }
+  providers: Record<string, ProviderClientConfig>
+  localPaths: {
+    root: string
+    settingsPath: string
+    secretsPath: string
+    cachePath: string
+  }
+  setupRequired: boolean
+  cachedAt: string | null
+}
+
 export interface Snapshot {
   generatedAt: string
   system: SystemSnapshot
   drives: DriveSnapshot[]
   crossDrive: CrossDriveSnapshot
+  settings: ClientSettings
 }
 
 export interface DriveHistoryPoint {

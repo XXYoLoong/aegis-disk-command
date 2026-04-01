@@ -1,8 +1,10 @@
-const DEFAULT_BASE_URL = 'https://api.deepseek.com'
-const DEFAULT_MODEL = 'deepseek-chat'
-const DEFAULT_TIMEOUT_MS = 12000
 const MAX_DRIVE_OPPORTUNITIES = 6
 const MAX_CROSS_DRIVE_SUGGESTIONS = 4
+
+function trimText(value, fallback = '') {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || fallback
+}
 
 function clampNumber(value, fallback = 0) {
   const number = Number(value)
@@ -21,29 +23,38 @@ function normalizeTone(value) {
   return 'info'
 }
 
-function trimText(value, fallback) {
-  const text = typeof value === 'string' ? value.trim() : ''
-  return text || fallback
-}
-
-function getTimeoutMs() {
-  return Math.max(3000, clampNumber(process.env.DEEPSEEK_TIMEOUT_MS, DEFAULT_TIMEOUT_MS))
-}
-
-export function getAiRuntimeConfig() {
-  const enabledByFlag = process.env.AI_ANALYSIS_ENABLED !== 'false'
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
+function createLanguageGuide(runtime) {
+  if (runtime.language === 'en-US') {
+    return {
+      outputLanguage: 'English',
+      strictHint: 'Do not mix in Chinese except when quoting original file names or paths.',
+    }
+  }
 
   return {
-    enabled: Boolean(enabledByFlag && apiKey),
-    provider: 'DeepSeek',
-    model: process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL,
-    baseUrl: process.env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_BASE_URL,
-    timeoutMs: getTimeoutMs(),
+    outputLanguage: '中文',
+    strictHint: '除非是路径、文件名或模型名，否则不要混入英文术语。',
   }
 }
 
-function buildDrivePrompt(input) {
+function createStyleGuide(runtime) {
+  if (runtime.reportStyle === 'gov-report') {
+    if (runtime.language === 'en-US') {
+      return 'Use a formal governance-report tone. Treat each drive as a governed region, emphasize current achievements, structural pressure, and next-step actions.'
+    }
+    return '请使用中国政府工作报告式的治理语气，把每个盘视作一个重点治理地区，强调总体态势、结构性压力、阶段性成效和下一步工作安排。'
+  }
+
+  if (runtime.language === 'en-US') {
+    return 'Use a practical operator tone focused on diagnosis and action.'
+  }
+
+  return '请使用默认的运维分析语气，强调诊断结论和可执行动作。'
+}
+
+function buildDrivePrompt(input, runtime) {
+  const languageGuide = createLanguageGuide(runtime)
+  const styleGuide = createStyleGuide(runtime)
   const candidatePaths = new Set([
     `${input.drive.letter}:\\`,
     ...input.topEntries.map((entry) => entry.path),
@@ -53,15 +64,17 @@ function buildDrivePrompt(input) {
   ])
 
   return {
-    system: [
-      '你是一个磁盘容量分析助手。',
-      '只允许输出严格 JSON，不要输出 Markdown，也不要输出解释性前后缀。',
-      '请使用中文，且只基于输入中真实存在的数据做判断。',
-      '优先给出可执行、低幻觉、适合本地磁盘整理的建议。',
-    ].join(' '),
+    system:
+      runtime.language === 'en-US'
+        ? `You are a disk-governance analyst. Return strict JSON only. ${languageGuide.strictHint} ${styleGuide}`
+        : `你是一名磁盘治理分析助手。只返回严格 JSON。${languageGuide.strictHint} ${styleGuide}`,
     user: JSON.stringify(
       {
-        task: '分析当前磁盘的空间结构，生成摘要、清理机会和整理建议。',
+        task:
+          runtime.language === 'en-US'
+            ? 'Analyze the current drive and return a concise summary, cleanup opportunities, and governance guidance.'
+            : '分析当前磁盘，返回摘要、清理机会和治理建议。',
+        outputLanguage: languageGuide.outputLanguage,
         outputSchema: {
           summary: 'string',
           opportunities: [
@@ -70,7 +83,7 @@ function buildDrivePrompt(input) {
               action: 'string',
               category: 'string',
               severity: 'critical | warning | info',
-              path: 'must be one of candidatePaths',
+              path: 'must be chosen from candidatePaths',
               estimatedBytes: 'number',
             },
           ],
@@ -83,10 +96,15 @@ function buildDrivePrompt(input) {
           ],
         },
         rules: [
-          '不能编造不存在的文件、目录、应用或扫描结果。',
-          'path 必须从 candidatePaths 中选择；如果没有合适对象，请使用盘符根路径。',
-          '机会项最多返回 6 条，指导建议最多返回 3 条。',
-          'estimatedBytes 必须是数字，并尽量贴近输入中的真实大小。',
+          runtime.language === 'en-US'
+            ? 'Do not invent files, folders, applications, or scan results.'
+            : '不要编造不存在的文件、目录、应用或扫描结果。',
+          runtime.language === 'en-US'
+            ? 'Each opportunity path must come from candidatePaths. If nothing matches, use the drive root.'
+            : '每条机会项的 path 必须来自 candidatePaths；如果没有合适对象，使用盘符根路径。',
+          runtime.language === 'en-US'
+            ? `Return at most ${MAX_DRIVE_OPPORTUNITIES} opportunities and 4 guidance items.`
+            : `最多返回 ${MAX_DRIVE_OPPORTUNITIES} 条机会项和 4 条治理建议。`,
         ],
         drive: input.drive,
         candidatePaths: [...candidatePaths],
@@ -101,16 +119,22 @@ function buildDrivePrompt(input) {
   }
 }
 
-function buildCrossDrivePrompt(input) {
+function buildCrossDrivePrompt(input, runtime) {
+  const languageGuide = createLanguageGuide(runtime)
+  const styleGuide = createStyleGuide(runtime)
+
   return {
-    system: [
-      '你是一个磁盘治理与目录标准化助手。',
-      '只允许输出严格 JSON，不要输出 Markdown，也不要输出解释性前后缀。',
-      '请用中文输出偏工程治理和长期维护视角的建议。',
-    ].join(' '),
+    system:
+      runtime.language === 'en-US'
+        ? `You are a cross-drive governance analyst. Return strict JSON only. ${languageGuide.strictHint} ${styleGuide}`
+        : `你是一名跨盘治理分析助手。只返回严格 JSON。${languageGuide.strictHint} ${styleGuide}`,
     user: JSON.stringify(
       {
-        task: '基于多盘结构，输出跨盘标准化建议。',
+        task:
+          runtime.language === 'en-US'
+            ? 'Return cross-drive normalization suggestions and a short governance summary.'
+            : '返回跨盘标准化建议和简短治理总结。',
+        outputLanguage: languageGuide.outputLanguage,
         outputSchema: {
           summary: 'string',
           standardizationSuggestions: [
@@ -121,9 +145,12 @@ function buildCrossDrivePrompt(input) {
           ],
         },
         rules: [
-          '建议最多返回 4 条。',
-          '不要输出泛泛而谈的建议，要结合输入中的真实目录和盘符分布。',
-          '不要杜撰不存在的软件、目录或盘符。',
+          runtime.language === 'en-US'
+            ? `Return at most ${MAX_CROSS_DRIVE_SUGGESTIONS} suggestions.`
+            : `最多返回 ${MAX_CROSS_DRIVE_SUGGESTIONS} 条建议。`,
+          runtime.language === 'en-US'
+            ? 'Do not invent directories, providers, or drive letters.'
+            : '不要编造目录、供应商或盘符。',
         ],
         drives: input.drives,
         duplicateTopLevelNames: input.duplicateTopLevelNames,
@@ -136,20 +163,19 @@ function buildCrossDrivePrompt(input) {
   }
 }
 
-function buildChatPrompt(input) {
+function buildChatPrompt(input, runtime) {
+  const languageGuide = createLanguageGuide(runtime)
+  const styleGuide = createStyleGuide(runtime)
   return {
-    system: [
-      '你是 Aegis Disk Command 的磁盘分析对话助手。',
-      '你正在回答用户关于某个磁盘当前扫描结果的问题。',
-      '只基于输入中的真实扫描结果和历史对话回答，不要编造不存在的数据。',
-      '请使用中文，回答要具体、实用、可操作。',
-    ].join(' '),
+    system:
+      runtime.language === 'en-US'
+        ? `You are the Aegis Disk Command follow-up assistant. Use only the provided scan evidence. ${languageGuide.strictHint} ${styleGuide}`
+        : `你是 Aegis Disk Command 的追问式分析助手。只能基于提供的扫描证据回答。${languageGuide.strictHint} ${styleGuide}`,
     messages: [
       {
         role: 'system',
         content: JSON.stringify(
           {
-            task: '基于盘符分析结果回答用户问题。',
             drive: input.drive,
             summary: input.summary,
             opportunities: input.opportunities,
@@ -164,9 +190,18 @@ function buildChatPrompt(input) {
         ),
       },
       ...input.history,
-      { role: 'user', content: input.message },
+      {
+        role: 'user',
+        content: input.message,
+      },
     ],
   }
+}
+
+function joinUrl(baseUrl, suffix) {
+  const normalizedBase = String(baseUrl || '').replace(/\/+$/, '')
+  const normalizedSuffix = String(suffix || '').replace(/^\/+/, '')
+  return `${normalizedBase}/${normalizedSuffix}`
 }
 
 async function postJson(url, body, timeoutMs, headers) {
@@ -183,7 +218,7 @@ async function postJson(url, body, timeoutMs, headers) {
 
     if (!response.ok) {
       const message = await response.text()
-      throw new Error(`DeepSeek API ${response.status}: ${message.slice(0, 240)}`)
+      throw new Error(`${response.status} ${message.slice(0, 320)}`)
     }
 
     return response.json()
@@ -194,7 +229,7 @@ async function postJson(url, body, timeoutMs, headers) {
 
 function extractJson(content) {
   if (!content || typeof content !== 'string') {
-    throw new Error('DeepSeek 返回了空内容。')
+    throw new Error('AI 返回了空内容。')
   }
 
   const trimmed = content.trim()
@@ -213,149 +248,201 @@ function extractJson(content) {
     return JSON.parse(trimmed.slice(objectStart, objectEnd + 1))
   }
 
-  throw new Error('DeepSeek 未返回可解析的 JSON。')
+  throw new Error('AI 未返回可解析的 JSON。')
 }
 
-async function requestDeepSeekJson(prompt) {
-  const config = getAiRuntimeConfig()
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
-
-  if (!config.enabled || !apiKey) {
-    return null
+function normalizeRuntime(runtime) {
+  return {
+    enabled: Boolean(runtime?.apiKey),
+    providerId: runtime?.providerId ?? 'deepseek',
+    providerName: runtime?.provider?.en ?? runtime?.provider?.zh ?? 'DeepSeek',
+    protocol: runtime?.protocol ?? 'openai-chat',
+    baseUrl: trimText(runtime?.baseUrl),
+    model: trimText(runtime?.model),
+    timeoutMs: Math.max(3000, clampNumber(runtime?.timeoutMs, 12000)),
+    apiKey: trimText(runtime?.apiKey),
+    language: runtime?.language === 'en-US' ? 'en-US' : 'zh-CN',
+    reportStyle: runtime?.reportStyle === 'gov-report' ? 'gov-report' : 'default',
+    docsUrl: trimText(runtime?.docsUrl),
   }
+}
 
+export function getAiRuntimeConfig(runtime) {
+  const normalized = normalizeRuntime(runtime)
+  return {
+    enabled: normalized.enabled,
+    providerId: normalized.providerId,
+    provider: normalized.providerName,
+    model: normalized.model,
+    baseUrl: normalized.baseUrl,
+    timeoutMs: normalized.timeoutMs,
+    language: normalized.language,
+    reportStyle: normalized.reportStyle,
+    docsUrl: normalized.docsUrl,
+  }
+}
+
+async function requestOpenAiCompatJson(prompt, runtime) {
   const response = await postJson(
-    new URL('/chat/completions', config.baseUrl).toString(),
+    joinUrl(runtime.baseUrl, 'chat/completions'),
     {
-      model: config.model,
+      model: runtime.model,
       temperature: 0.2,
-      max_tokens: 1600,
-      response_format: { type: 'json_object' },
+      max_tokens: 1800,
       messages: [
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
       ],
     },
-    config.timeoutMs,
+    runtime.timeoutMs,
     {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${runtime.apiKey}`,
     },
   )
 
-  const content = response?.choices?.[0]?.message?.content
+  return extractJson(response?.choices?.[0]?.message?.content)
+}
+
+async function requestOpenAiCompatChat(prompt, runtime) {
+  const response = await postJson(
+    joinUrl(runtime.baseUrl, 'chat/completions'),
+    {
+      model: runtime.model,
+      temperature: 0.3,
+      max_tokens: 1800,
+      messages: [{ role: 'system', content: prompt.system }, ...prompt.messages],
+    },
+    runtime.timeoutMs,
+    {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${runtime.apiKey}`,
+    },
+  )
+
+  return trimText(response?.choices?.[0]?.message?.content, '')
+}
+
+async function requestAnthropicJson(prompt, runtime) {
+  const response = await postJson(
+    joinUrl(runtime.baseUrl, 'v1/messages'),
+    {
+      model: runtime.model,
+      max_tokens: 1800,
+      temperature: 0.2,
+      system: prompt.system,
+      messages: [{ role: 'user', content: prompt.user }],
+    },
+    runtime.timeoutMs,
+    {
+      'Content-Type': 'application/json',
+      'x-api-key': runtime.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+  )
+
+  const content = Array.isArray(response?.content)
+    ? response.content
+        .filter((item) => item?.type === 'text' && item.text)
+        .map((item) => item.text)
+        .join('\n')
+    : ''
+
   return extractJson(content)
 }
 
-async function requestDeepSeekChat(prompt) {
-  const config = getAiRuntimeConfig()
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
-
-  if (!config.enabled || !apiKey) {
-    return null
-  }
-
+async function requestAnthropicChat(prompt, runtime) {
   const response = await postJson(
-    new URL('/chat/completions', config.baseUrl).toString(),
+    joinUrl(runtime.baseUrl, 'v1/messages'),
     {
-      model: config.model,
-      temperature: 0.25,
-      max_tokens: 1200,
+      model: runtime.model,
+      max_tokens: 1800,
+      temperature: 0.3,
+      system: prompt.system,
       messages: prompt.messages,
     },
-    config.timeoutMs,
+    runtime.timeoutMs,
     {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': runtime.apiKey,
+      'anthropic-version': '2023-06-01',
     },
   )
 
-  const content = response?.choices?.[0]?.message?.content
-  return trimText(content, '暂时无法生成回答，请稍后再试。')
+  return trimText(
+    Array.isArray(response?.content)
+      ? response.content
+          .filter((item) => item?.type === 'text' && item.text)
+          .map((item) => item.text)
+          .join('\n')
+      : '',
+    '',
+  )
 }
 
-function normalizeDriveOpportunity(letter, item, knownPaths) {
-  const fallbackPath = `${letter}:\\`
-  const path = typeof item?.path === 'string' && knownPaths.has(item.path) ? item.path : fallbackPath
+async function requestStructuredJson(prompt, runtime) {
+  if (!runtime.enabled) return null
+  if (runtime.protocol === 'anthropic-messages') {
+    return requestAnthropicJson(prompt, runtime)
+  }
+  return requestOpenAiCompatJson(prompt, runtime)
+}
+
+async function requestChatText(prompt, runtime) {
+  if (!runtime.enabled) return null
+  if (runtime.protocol === 'anthropic-messages') {
+    return requestAnthropicChat(prompt, runtime)
+  }
+  return requestOpenAiCompatChat(prompt, runtime)
+}
+
+export async function analyzeDriveWithAi(input, runtimeInput) {
+  const runtime = normalizeRuntime(runtimeInput)
+  const result = await requestStructuredJson(buildDrivePrompt(input, runtime), runtime)
+  if (!result) return null
 
   return {
-    id: `${letter}-${path}-${trimText(item?.title, 'AI 分析机会')}`,
-    drive: letter,
-    path,
-    category: trimText(item?.category, 'ai'),
-    severity: normalizeSeverity(item?.severity),
-    title: trimText(item?.title, 'AI 分析机会'),
-    action: trimText(item?.action, '建议结合当前目录结构进一步确认是否可以整理或迁移。'),
-    estimatedBytes: Math.max(0, clampNumber(item?.estimatedBytes)),
+    summary: trimText(result.summary, runtime.language === 'en-US' ? 'No summary returned.' : '未返回摘要。'),
+    opportunities: Array.isArray(result.opportunities)
+      ? result.opportunities.slice(0, MAX_DRIVE_OPPORTUNITIES).map((item, index) => ({
+          id: `${input.drive.letter}-ai-${index}`,
+          drive: input.drive.letter,
+          path: trimText(item.path, `${input.drive.letter}:\\`),
+          category: trimText(item.category, 'ai'),
+          severity: normalizeSeverity(item.severity),
+          title: trimText(item.title, runtime.language === 'en-US' ? 'Suggested action' : '建议事项'),
+          action: trimText(item.action, runtime.language === 'en-US' ? 'Review this path.' : '建议检查该路径。'),
+          estimatedBytes: Math.max(0, clampNumber(item.estimatedBytes)),
+        }))
+      : [],
+    guidance: Array.isArray(result.guidance)
+      ? result.guidance.slice(0, 4).map((item) => ({
+          title: trimText(item.title, runtime.language === 'en-US' ? 'Guidance' : '治理建议'),
+          detail: trimText(item.detail, runtime.language === 'en-US' ? 'No detail provided.' : '未提供详细说明。'),
+          tone: normalizeTone(item.tone),
+        }))
+      : [],
   }
 }
 
-function normalizeDriveGuidance(items) {
-  return (Array.isArray(items) ? items : [])
-    .slice(0, 3)
-    .map((item, index) => ({
-      title: trimText(item?.title, `整理建议 ${index + 1}`),
-      detail: trimText(item?.detail, '建议结合当前盘的职责和主要占用内容做进一步规划。'),
-      tone: normalizeTone(item?.tone),
-    }))
-}
-
-export async function analyzeDriveWithAi(input) {
-  const config = getAiRuntimeConfig()
-  if (!config.enabled) return null
-
-  const prompt = buildDrivePrompt(input)
-  const result = await requestDeepSeekJson(prompt)
-  const knownPaths = new Set(prompt.user ? JSON.parse(prompt.user).candidatePaths : [])
+export async function analyzeCrossDriveWithAi(input, runtimeInput) {
+  const runtime = normalizeRuntime(runtimeInput)
+  const result = await requestStructuredJson(buildCrossDrivePrompt(input, runtime), runtime)
+  if (!result) return null
 
   return {
-    summary: trimText(result?.summary, ''),
-    opportunities: (Array.isArray(result?.opportunities) ? result.opportunities : [])
-      .slice(0, MAX_DRIVE_OPPORTUNITIES)
-      .map((item) => normalizeDriveOpportunity(input.drive.letter, item, knownPaths)),
-    guidance: normalizeDriveGuidance(result?.guidance),
+    summary: trimText(result.summary, runtime.language === 'en-US' ? 'No cross-drive summary returned.' : '未返回跨盘摘要。'),
+    standardizationSuggestions: Array.isArray(result.standardizationSuggestions)
+      ? result.standardizationSuggestions.slice(0, MAX_CROSS_DRIVE_SUGGESTIONS).map((item) => ({
+          title: trimText(item.title, runtime.language === 'en-US' ? 'Standardization suggestion' : '标准化建议'),
+          detail: trimText(item.detail, runtime.language === 'en-US' ? 'No detail provided.' : '未提供详细说明。'),
+        }))
+      : [],
   }
 }
 
-export async function analyzeCrossDriveWithAi(input) {
-  const config = getAiRuntimeConfig()
-  if (!config.enabled) return null
-
-  const prompt = buildCrossDrivePrompt(input)
-  const result = await requestDeepSeekJson(prompt)
-
-  return {
-    summary: trimText(result?.summary, ''),
-    standardizationSuggestions: (Array.isArray(result?.standardizationSuggestions)
-      ? result.standardizationSuggestions
-      : []
-    )
-      .slice(0, MAX_CROSS_DRIVE_SUGGESTIONS)
-      .map((item, index) => ({
-        title: trimText(item?.title, `标准化建议 ${index + 1}`),
-        detail: trimText(item?.detail, '建议结合真实目录结构进一步整理。'),
-      })),
-  }
-}
-
-export async function chatWithDriveContext(input) {
-  const config = getAiRuntimeConfig()
-  if (!config.enabled) {
-    return '当前未启用 DeepSeek，对话能力暂不可用。'
-  }
-
-  const prompt = buildChatPrompt({
-    drive: input.drive,
-    summary: input.summary,
-    opportunities: input.opportunities,
-    topEntries: input.topEntries,
-    focusDirectories: input.focusDirectories,
-    notableFiles: input.notableFiles,
-    aiGuidance: input.aiGuidance,
-    crossDriveSummary: input.crossDriveSummary,
-    history: Array.isArray(input.history) ? input.history.slice(-8) : [],
-    message: input.message,
-  })
-
-  return requestDeepSeekChat(prompt)
+export async function chatWithDriveContext(input, runtimeInput) {
+  const runtime = normalizeRuntime(runtimeInput)
+  const reply = await requestChatText(buildChatPrompt(input, runtime), runtime)
+  return trimText(reply, runtime.language === 'en-US' ? 'No answer returned.' : '未返回回答。')
 }

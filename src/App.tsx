@@ -2,6 +2,7 @@ import {
   useDeferredValue,
   useEffect,
   useEffectEvent,
+  useMemo,
   useState,
   startTransition,
   type CSSProperties,
@@ -16,20 +17,21 @@ import {
   MetricChip,
   OverviewView,
   ScanView,
+  SettingsView,
   StatusBadge,
 } from './components/CockpitViews'
-import type { DriveHistoryMap, DriveSnapshot, Snapshot } from './types'
+import { t } from './i18n'
 import { formatBytes, formatPercent, formatUpdatedAt } from './lib/format'
+import type {
+  ClientSettings,
+  DriveHistoryMap,
+  DriveSnapshot,
+  LanguageMode,
+  Snapshot,
+  UiThemeMode,
+} from './types'
 
-type ViewMode = 'overview' | 'drive' | 'scan' | 'ai' | 'chat'
-
-const VIEWS: Array<{ id: ViewMode; label: string }> = [
-  { id: 'overview', label: '全局中控' },
-  { id: 'drive', label: '盘面细读' },
-  { id: 'scan', label: '扫描流程' },
-  { id: 'ai', label: 'AI 解读' },
-  { id: 'chat', label: 'AI 对话' },
-]
+type ViewMode = 'overview' | 'drive' | 'scan' | 'ai' | 'chat' | 'settings'
 
 function pickDefaultDrive(drives: DriveSnapshot[]) {
   return [...drives].sort((a, b) => b.usePercent - a.usePercent)[0]?.letter ?? ''
@@ -49,14 +51,6 @@ function appendHistory(previous: DriveHistoryMap, snapshot: Snapshot) {
   return next
 }
 
-function driveStyle(letter: string, usePercent: number) {
-  const colors = ['#62e5ff', '#79a2ff', '#a586ff', '#36d6c5', '#4f8bff', '#7ce7ff']
-  return {
-    '--drive-accent': colors[letter.charCodeAt(0) % colors.length],
-    '--meter-width': `${Math.max(4, Math.min(100, usePercent))}%`,
-  } as CSSProperties
-}
-
 function hasLiveActivity(snapshot: Snapshot | null) {
   if (!snapshot) return true
   return Boolean(
@@ -66,25 +60,70 @@ function hasLiveActivity(snapshot: Snapshot | null) {
   )
 }
 
-function systemTone(snapshot: Snapshot | null) {
-  if (!snapshot) return 'warning'
-  if (snapshot.system.freeBytes < 20 * 1024 ** 3) return 'critical'
-  if (snapshot.system.freeBytes < 80 * 1024 ** 3) return 'warning'
+function resolveTheme(mode: UiThemeMode) {
+  if (mode === 'system') {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  }
+  return mode
+}
+
+function driveCardStyle(usePercent: number): CSSProperties {
+  return {
+    '--fill-width': `${Math.max(6, Math.min(100, usePercent))}%`,
+  } as CSSProperties
+}
+
+function mapHealthTone(health: DriveSnapshot['health']) {
+  if (health === 'critical') return 'critical'
+  if (health === 'warning') return 'warning'
   return 'stable'
 }
 
-function scanBadgeTone(drive: DriveSnapshot) {
-  if (drive.scanStatus === 'ready') return 'stable'
-  if (drive.scanStatus === 'scanning') return 'info'
-  if (drive.scanStatus === 'error') return 'critical'
-  return 'warning'
+function mapHealthLabel(health: DriveSnapshot['health'], language: LanguageMode) {
+  if (health === 'critical') return t(language, 'healthCritical')
+  if (health === 'warning') return t(language, 'healthWarning')
+  return t(language, 'healthStable')
 }
 
-function labelScanStatus(status: DriveSnapshot['scanStatus']) {
-  if (status === 'ready') return '已完成'
-  if (status === 'scanning') return '扫描中'
-  if (status === 'error') return '异常'
-  return '排队中'
+function mapSystemAiStatus(status: string, language: LanguageMode) {
+  if (status === 'disabled') return t(language, 'aiDisabled')
+  if (status === 'running' || status === 'analyzing') return t(language, 'aiRunning')
+  if (status === 'queued') return t(language, 'aiQueued')
+  if (status === 'ready') return t(language, 'aiReady')
+  if (status === 'error' || status === 'degraded' || status === 'degraded-cache') return t(language, 'aiError')
+  return t(language, 'aiIdle')
+}
+
+function createEmptySettings(): ClientSettings {
+  return {
+    ui: {
+      themeMode: 'system',
+      language: 'zh-CN',
+      reportStyle: 'default',
+    },
+    runtime: {
+      selectedProvider: 'deepseek',
+      allowOfflineCache: true,
+      autoSaveOnlineCache: true,
+    },
+    providers: {},
+    localPaths: {
+      root: '',
+      settingsPath: '',
+      secretsPath: '',
+      cachePath: '',
+    },
+    setupRequired: true,
+    cachedAt: null,
+  }
+}
+
+async function fetchSnapshotPayload(language: LanguageMode) {
+  const response = await fetch('/api/snapshot')
+  if (!response.ok) {
+    throw new Error(language === 'en-US' ? 'Failed to fetch snapshot.' : '读取快照失败。')
+  }
+  return (await response.json()) as Snapshot
 }
 
 export default function App() {
@@ -98,22 +137,30 @@ export default function App() {
   const [chatBusy, setChatBusy] = useState(false)
   const [chatError, setChatError] = useState('')
   const [chatByDrive, setChatByDrive] = useState<Record<string, ChatMessage[]>>({})
+  const [settingsDraft, setSettingsDraft] = useState<ClientSettings>(createEmptySettings())
+  const [providerApiKeys, setProviderApiKeys] = useState<Record<string, string>>({})
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
+  const [settingsMessage, setSettingsMessage] = useState('')
   const deferredSnapshot = useDeferredValue(snapshot)
+
+  const language = settingsDraft.ui.language
 
   const refreshSnapshot = useEffectEvent(async () => {
     try {
-      const response = await fetch('/api/snapshot')
-      if (!response.ok) throw new Error('读取快照失败')
-      const nextSnapshot = (await response.json()) as Snapshot
+      const nextSnapshot = await fetchSnapshotPayload(language)
 
       startTransition(() => {
         setSnapshot(nextSnapshot)
         setHistory((previous) => appendHistory(previous, nextSnapshot))
       })
 
+      setSettingsDraft((previous) =>
+        Object.keys(previous.providers).length === 0 ? nextSnapshot.settings : { ...previous, ...nextSnapshot.settings, providers: { ...previous.providers, ...nextSnapshot.settings.providers } },
+      )
       setFetchError('')
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : '读取快照失败')
+      setFetchError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to fetch snapshot.' : '读取快照失败。')
     }
   })
 
@@ -122,12 +169,26 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const intervalMs = hasLiveActivity(snapshot) ? 1200 : 4000
+    const intervalMs = hasLiveActivity(snapshot) ? 1200 : 4200
     const timer = window.setInterval(() => {
       void refreshSnapshot()
     }, intervalMs)
     return () => window.clearInterval(timer)
   }, [snapshot])
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: light)')
+    const applyTheme = () => {
+      document.documentElement.dataset.theme = resolveTheme(settingsDraft.ui.themeMode)
+    }
+
+    applyTheme()
+
+    if (settingsDraft.ui.themeMode === 'system') {
+      media.addEventListener('change', applyTheme)
+      return () => media.removeEventListener('change', applyTheme)
+    }
+  }, [settingsDraft.ui.themeMode])
 
   useEffect(() => {
     if (!snapshot?.drives.length) return
@@ -136,23 +197,34 @@ export default function App() {
     }
   }, [selectedDrive, snapshot])
 
+  const views = useMemo(
+    () => [
+      { id: 'overview', label: t(language, 'viewOverview') },
+      { id: 'drive', label: t(language, 'viewDrive') },
+      { id: 'scan', label: t(language, 'viewScan') },
+      { id: 'ai', label: t(language, 'viewAi') },
+      { id: 'chat', label: t(language, 'viewChat') },
+      { id: 'settings', label: t(language, 'viewSettings') },
+    ],
+    [language],
+  )
+
   async function queueRescan(letter: string) {
     setRescanTarget(letter)
-    setChatError('')
-
     try {
       const response = await fetch('/api/rescan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ drive: letter }),
       })
-      if (!response.ok) {
-        const data = await response.json().catch(() => null)
-        throw new Error(data?.message ?? '重新扫描失败')
+      const data = await response.json()
+      if (!response.ok || !data.ok) {
+        throw new Error(data?.message ?? (language === 'en-US' ? 'Failed to rescan.' : '重新扫描失败。'))
       }
       setViewMode('scan')
+      setSettingsMessage('')
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : '重新扫描失败')
+      setFetchError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to rescan.' : '重新扫描失败。')
     } finally {
       setRescanTarget('')
     }
@@ -180,30 +252,73 @@ export default function App() {
           history: historyItems.slice(-8),
         }),
       })
-
       const data = await response.json()
       if (!response.ok || !data.ok) {
-        throw new Error(data?.message ?? 'AI 对话失败')
+        throw new Error(data?.message ?? (language === 'en-US' ? 'AI chat failed.' : 'AI 对话失败。'))
       }
-
       setChatByDrive((previous) => ({
         ...previous,
         [selectedDrive]: [...(previous[selectedDrive] ?? []), { role: 'assistant', content: String(data.reply ?? '') }],
       }))
     } catch (error) {
-      setChatError(error instanceof Error ? error.message : 'AI 对话失败')
+      setChatError(error instanceof Error ? error.message : language === 'en-US' ? 'AI chat failed.' : 'AI 对话失败。')
     } finally {
       setChatBusy(false)
     }
   }
 
+  async function saveSettings() {
+    setSettingsBusy(true)
+    setSettingsError('')
+    setSettingsMessage('')
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ui: settingsDraft.ui,
+          runtime: settingsDraft.runtime,
+          providers: Object.fromEntries(
+            Object.entries(settingsDraft.providers).map(([providerId, config]) => [
+              providerId,
+              {
+                baseUrl: config.baseUrl,
+                model: config.model,
+                timeoutMs: config.timeoutMs,
+              },
+            ]),
+          ),
+          providerSecrets: Object.fromEntries(
+            Object.entries(providerApiKeys).filter(([, value]) => value.trim()),
+          ),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok || !data.ok) {
+        throw new Error(data?.message ?? (language === 'en-US' ? 'Failed to save settings.' : '保存设置失败。'))
+      }
+      setSettingsDraft(data.settings)
+      setProviderApiKeys({})
+      setSettingsMessage(language === 'en-US' ? 'Settings saved.' : '设置已保存。')
+      const nextSnapshot = await fetchSnapshotPayload(data.settings.ui.language)
+      startTransition(() => {
+        setSnapshot(nextSnapshot)
+        setHistory((previous) => appendHistory(previous, nextSnapshot))
+      })
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to save settings.' : '保存设置失败。')
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
   if (!deferredSnapshot) {
     return (
-      <div className="cockpit-shell">
-        <div className="background-grid" />
-        <main className="loading-state">
-          <div className="loading-ring" />
-          <p>正在初始化本地磁盘驾驶舱...</p>
+      <div className="app-shell">
+        <div className="app-backdrop" />
+        <main className="boot-screen">
+          <div className="boot-ring" />
+          <p>{language === 'en-US' ? 'Starting the local disk cockpit...' : '正在启动本地磁盘治理中枢...'}</p>
         </main>
       </div>
     )
@@ -214,35 +329,39 @@ export default function App() {
     deferredSnapshot.drives[0] ??
     null
   const chatMessages = activeDrive ? chatByDrive[activeDrive.letter] ?? [] : []
+  const providerDisplayName =
+    settingsDraft.providers[deferredSnapshot.system.selectedProvider]
+      ? language === 'en-US'
+        ? settingsDraft.providers[deferredSnapshot.system.selectedProvider].names.en
+        : settingsDraft.providers[deferredSnapshot.system.selectedProvider].names.zh
+      : deferredSnapshot.system.aiProvider || '--'
 
   return (
-    <div className="cockpit-shell">
-      <div className="background-grid" />
+    <div className="app-shell">
+      <div className="app-backdrop" />
 
-      <header className="command-header">
+      <header className="top-shell">
         <div className="brand-block">
-          <div className="brand-mark" />
-          <div>
-            <p className="brand-overline">LOCAL DISK COMMAND CENTER</p>
-            <h1>Aegis Disk Command</h1>
-            <p className="brand-copy">以总览中控为入口，向下切入单盘扫描、AI 解读与追问对话。</p>
-          </div>
+          <p className="caption">{t(language, 'topCaption')}</p>
+          <h1>{t(language, 'appName')}</h1>
+          <p className="subcopy">{t(language, 'appSubtitle')}</p>
         </div>
 
-        <div className="header-metrics">
-          <MetricChip label="总容量" value={formatBytes(deferredSnapshot.system.totalBytes)} />
-          <MetricChip label="当前剩余" value={formatBytes(deferredSnapshot.system.freeBytes)} />
-          <MetricChip label="扫描队列" value={String(deferredSnapshot.system.scanQueueDepth)} />
-          <MetricChip label="AI 队列" value={String(deferredSnapshot.system.aiQueueDepth)} />
-          <MetricChip label="主机" value={deferredSnapshot.system.hostName} />
+        <div className="top-metrics">
+          <MetricChip label={t(language, 'totalCapacity')} value={formatBytes(deferredSnapshot.system.totalBytes, language)} />
+          <MetricChip label={t(language, 'freeSpace')} value={formatBytes(deferredSnapshot.system.freeBytes, language)} />
+          <MetricChip label={t(language, 'scanQueue')} value={String(deferredSnapshot.system.scanQueueDepth)} />
+          <MetricChip label={t(language, 'aiQueue')} value={String(deferredSnapshot.system.aiQueueDepth)} />
+          <MetricChip label={t(language, 'provider')} value={providerDisplayName} />
+          <MetricChip label={t(language, 'host')} value={deferredSnapshot.system.hostName} />
         </div>
 
-        <nav className="view-tabs" aria-label="视图切换">
-          {VIEWS.map((view) => (
+        <nav className="top-nav">
+          {views.map((view) => (
             <button
               key={view.id}
-              className={`view-tab ${viewMode === view.id ? 'is-active' : ''}`}
-              onClick={() => setViewMode(view.id)}
+              className={`nav-pill ${viewMode === view.id ? 'is-active' : ''}`}
+              onClick={() => setViewMode(view.id as ViewMode)}
             >
               {view.label}
             </button>
@@ -250,50 +369,47 @@ export default function App() {
         </nav>
       </header>
 
-      <div className="workspace-shell">
+      <div className="workspace">
         <aside className="drive-rail">
           <div className="rail-head">
-            <span>盘符矩阵</span>
-            <StatusBadge tone={systemTone(deferredSnapshot)}>
-              {formatPercent(
-                deferredSnapshot.system.totalBytes === 0
-                  ? 0
-                  : (deferredSnapshot.system.usedBytes / deferredSnapshot.system.totalBytes) * 100,
-              )}
+            <strong>{t(language, 'drivesRail')}</strong>
+            <StatusBadge tone={deferredSnapshot.system.setupRequired ? 'warning' : 'stable'}>
+              {deferredSnapshot.system.setupRequired ? t(language, 'setupRequired') : mapHealthLabel('stable', language)}
             </StatusBadge>
           </div>
 
-          <div className="drive-list">
+          <div className="drive-stack">
             {deferredSnapshot.drives.map((drive) => (
               <button
                 key={drive.letter}
                 className={`drive-card ${selectedDrive === drive.letter ? 'is-selected' : ''}`}
                 onClick={() => setSelectedDrive(drive.letter)}
-                style={driveStyle(drive.letter, drive.usePercent)}
+                style={driveCardStyle(drive.usePercent)}
               >
                 <div className="drive-card__head">
                   <strong>{drive.letter}:</strong>
-                  <StatusBadge tone={scanBadgeTone(drive)}>{labelScanStatus(drive.scanStatus)}</StatusBadge>
+                  <StatusBadge tone={mapHealthTone(drive.health)}>{mapHealthLabel(drive.health, language)}</StatusBadge>
                 </div>
                 <div className="drive-card__meta">
                   <span>{drive.fsType}</span>
-                  <span>{formatPercent(drive.usePercent)}</span>
+                  <span>{formatPercent(drive.usePercent, language)}</span>
                 </div>
-                <div className="drive-card__meter">
+                <div className="drive-card__bar">
                   <span />
                 </div>
-                <small>剩余 {formatBytes(drive.freeBytes)}</small>
+                <small>{formatBytes(drive.freeBytes, language)}</small>
               </button>
             ))}
           </div>
         </aside>
 
-        <main className="workspace-main">
+        <main className="main-stage">
           {viewMode === 'overview' ? (
             <OverviewView
               snapshot={deferredSnapshot}
               activeDrive={activeDrive}
               history={history}
+              language={language}
               onRescan={queueRescan}
               rescanTarget={rescanTarget}
             />
@@ -304,6 +420,7 @@ export default function App() {
               snapshot={deferredSnapshot}
               activeDrive={activeDrive}
               history={history}
+              language={language}
               onRescan={queueRescan}
               rescanTarget={rescanTarget}
             />
@@ -314,6 +431,7 @@ export default function App() {
               snapshot={deferredSnapshot}
               activeDrive={activeDrive}
               history={history}
+              language={language}
               onRescan={queueRescan}
               rescanTarget={rescanTarget}
             />
@@ -324,6 +442,7 @@ export default function App() {
               snapshot={deferredSnapshot}
               activeDrive={activeDrive}
               history={history}
+              language={language}
               onRescan={queueRescan}
               rescanTarget={rescanTarget}
             />
@@ -336,56 +455,96 @@ export default function App() {
               busy={chatBusy}
               error={chatError}
               messages={chatMessages}
+              language={language}
               onDraftChange={setChatDraft}
               onSubmit={submitChat}
             />
           ) : null}
+
+          {viewMode === 'settings' ? (
+            <SettingsView
+              language={language}
+              settings={settingsDraft}
+              providerApiKeys={providerApiKeys}
+              saveBusy={settingsBusy}
+              saveError={settingsError}
+              saveMessage={settingsMessage}
+              onThemeChange={(value) =>
+                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, themeMode: value } }))
+              }
+              onLanguageChange={(value) =>
+                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, language: value } }))
+              }
+              onReportStyleChange={(value) =>
+                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, reportStyle: value } }))
+              }
+              onProviderChange={(value) =>
+                setSettingsDraft((previous) => ({ ...previous, runtime: { ...previous.runtime, selectedProvider: value } }))
+              }
+              onProviderFieldChange={(providerId, field, value) =>
+                setSettingsDraft((previous) => ({
+                  ...previous,
+                  providers: {
+                    ...previous.providers,
+                    [providerId]: {
+                      ...previous.providers[providerId],
+                      [field]: field === 'timeoutMs' ? Number(value || 0) : value,
+                    },
+                  },
+                }))
+              }
+              onProviderApiKeyChange={(providerId, value) =>
+                setProviderApiKeys((previous) => ({ ...previous, [providerId]: value }))
+              }
+              onToggleRuntime={(field, value) =>
+                setSettingsDraft((previous) => ({
+                  ...previous,
+                  runtime: { ...previous.runtime, [field]: value },
+                }))
+              }
+              onSave={saveSettings}
+            />
+          ) : null}
         </main>
 
-        <aside className="inspector-rail">
-          <section className="inspector-card">
-            <div className="inspector-card__head">
-              <span>系统状态</span>
-              <StatusBadge tone={systemTone(deferredSnapshot)}>
-                {deferredSnapshot.system.activeScan ? `扫描 ${deferredSnapshot.system.activeScan}:` : '空闲'}
+        <aside className="side-panel">
+          <section className="side-card">
+            <div className="side-card__head">
+              <strong>{t(language, 'systemStatus')}</strong>
+              <StatusBadge tone={fetchError ? 'critical' : deferredSnapshot.system.setupRequired ? 'warning' : 'stable'}>
+                {fetchError ? t(language, 'scanError') : deferredSnapshot.system.setupRequired ? t(language, 'scanQueued') : t(language, 'scanReady')}
               </StatusBadge>
             </div>
-            <div className="metric-stack">
-              <MetricChip label="AI 引擎" value={deferredSnapshot.system.analysisEngine} />
-              <MetricChip label="AI 状态" value={deferredSnapshot.system.aiStatus} />
-              <MetricChip label="最近刷新" value={formatUpdatedAt(deferredSnapshot.generatedAt)} />
-              <MetricChip label="平台" value={deferredSnapshot.system.platform} />
+            <div className="side-metrics">
+              <MetricChip label={t(language, 'provider')} value={providerDisplayName} />
+              <MetricChip label={t(language, 'aiStatusLabel')} value={mapSystemAiStatus(deferredSnapshot.system.aiStatus, language)} />
+              <MetricChip label={t(language, 'lastUpdated')} value={formatUpdatedAt(deferredSnapshot.generatedAt, language)} />
             </div>
+            {fetchError ? <p className="inline-error">{fetchError}</p> : null}
           </section>
 
-          <section className="inspector-card">
-            <div className="inspector-card__head">
-              <span>当前盘摘要</span>
-              {activeDrive ? <StatusBadge tone="info">{activeDrive.analysisSource}</StatusBadge> : null}
+          <section className="side-card">
+            <div className="side-card__head">
+              <strong>{t(language, 'currentDrive')}</strong>
             </div>
             {activeDrive ? (
               <>
-                <p className="inspector-copy">
-                  {activeDrive.analysisSummary || '等待该盘扫描和 AI 结果返回后显示摘要。'}
-                </p>
-                <div className="metric-stack">
-                  <MetricChip label="扫描完成" value={formatUpdatedAt(activeDrive.lastScannedAt)} />
-                  <MetricChip label="AI 完成" value={formatUpdatedAt(activeDrive.lastAiAnalyzedAt)} />
+                <p className="side-copy">{activeDrive.analysisSummary || t(language, 'noData')}</p>
+                <div className="side-metrics">
+                  <MetricChip label={t(language, 'freeSpace')} value={formatBytes(activeDrive.freeBytes, language)} />
+                  <MetricChip label={t(language, 'lastUpdated')} value={formatUpdatedAt(activeDrive.lastScannedAt, language)} />
                 </div>
               </>
             ) : (
-              <EmptyState title="暂无盘摘要" detail="选中盘符后，这里会显示 AI 与规则汇总的短摘要。" />
+              <EmptyState language={language} title={t(language, 'noDrive')} detail={t(language, 'noData')} />
             )}
           </section>
 
-          <section className="inspector-card">
-            <div className="inspector-card__head">
-              <span>跨盘总览</span>
+          <section className="side-card">
+            <div className="side-card__head">
+              <strong>{t(language, 'standards')}</strong>
             </div>
-            <p className="inspector-copy">
-              {deferredSnapshot.crossDrive.summary || '等待系统汇总跨盘关系后显示全局结论。'}
-            </p>
-            {fetchError ? <p className="inline-error">{fetchError}</p> : null}
+            <p className="side-copy">{deferredSnapshot.crossDrive.summary || t(language, 'noSuggestions')}</p>
           </section>
         </aside>
       </div>

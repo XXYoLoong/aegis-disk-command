@@ -1,4 +1,10 @@
-export function formatBytes(value: number) {
+import type { LanguageMode } from '../types'
+
+function normalizeLocale(locale: LanguageMode) {
+  return locale === 'en-US' ? 'en-US' : 'zh-CN'
+}
+
+export function formatBytes(value: number, locale: LanguageMode = 'zh-CN') {
   if (!Number.isFinite(value) || value <= 0) return '0 B'
 
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
@@ -8,29 +14,42 @@ export function formatBytes(value: number) {
   )
   const amount = value / 1024 ** exponent
   const fractionDigits = amount >= 100 ? 0 : amount >= 10 ? 1 : 2
+  const formatter = new Intl.NumberFormat(normalizeLocale(locale), {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  })
 
-  return `${amount.toFixed(fractionDigits)} ${units[exponent]}`
+  return `${formatter.format(amount)} ${units[exponent]}`
 }
 
-export function formatPercent(value: number) {
-  return `${value.toFixed(1)}%`
+export function formatPercent(value: number, locale: LanguageMode = 'zh-CN') {
+  return new Intl.NumberFormat(normalizeLocale(locale), {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value) + '%'
 }
 
-export function formatNumber(value: number) {
-  return new Intl.NumberFormat('zh-CN').format(value)
+export function formatNumber(value: number, locale: LanguageMode = 'zh-CN') {
+  return new Intl.NumberFormat(normalizeLocale(locale)).format(value)
 }
 
-export function formatDurationMs(value: number | null) {
-  if (!value) return '待完成'
+export function formatDurationMs(value: number | null, locale: LanguageMode = 'zh-CN') {
+  if (!value) return locale === 'en-US' ? 'Pending' : '待完成'
   if (value < 1000) return `${value} ms`
-  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
-  return `${(value / 60_000).toFixed(1)} 分钟`
+  if (value < 60_000) {
+    return locale === 'en-US'
+      ? `${(value / 1000).toFixed(1)} sec`
+      : `${(value / 1000).toFixed(1)} 秒`
+  }
+  return locale === 'en-US'
+    ? `${(value / 60_000).toFixed(1)} min`
+    : `${(value / 60_000).toFixed(1)} 分钟`
 }
 
-export function formatUpdatedAt(value: string | null) {
-  if (!value) return '等待首次分析'
+export function formatUpdatedAt(value: string | null, locale: LanguageMode = 'zh-CN') {
+  if (!value) return locale === 'en-US' ? 'Waiting for the first analysis' : '等待首次分析'
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(normalizeLocale(locale), {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -42,6 +61,6 @@ export function formatUpdatedAt(value: string | null) {
 }
 
 export function shortPath(value: string) {
-  if (value.length <= 60) return value
-  return `${value.slice(0, 24)}...${value.slice(-32)}`
+  if (value.length <= 72) return value
+  return `${value.slice(0, 28)}...${value.slice(-36)}`
 }

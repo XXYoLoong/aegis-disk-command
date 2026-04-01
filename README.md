@@ -9,81 +9,111 @@
 [![React](https://img.shields.io/badge/React-19-0ea5e9?style=flat-square)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-7c3aed?style=flat-square)](https://vite.dev/)
 [![Node.js](https://img.shields.io/badge/Node.js-Express-1f7a43?style=flat-square)](https://nodejs.org/)
-[![PowerShell](https://img.shields.io/badge/PowerShell-Scanner-2f6fed?style=flat-square)](https://learn.microsoft.com/powershell/)
-[![DeepSeek](https://img.shields.io/badge/AI-DeepSeek-2563eb?style=flat-square)](https://api-docs.deepseek.com/)
+[![DeepSeek Default](https://img.shields.io/badge/Default-DeepSeek-2563eb?style=flat-square)](https://api-docs.deepseek.com/)
 
-本地磁盘实时驾驶舱。它不是传统“扫完一次给一张静态报表”的工具，而是一个持续运行的磁盘指挥台：
+本地磁盘治理工作台，面向 Windows 电脑做实时扫描、跨盘分析、AI 解读、离线回退和多供应商配置。
 
-- 实时读取所有盘的容量、扫描队列和 AI 分析状态
-- 用单次遍历扫描器输出盘面热点、显著文件、缓存机会和跨盘重复项
-- 将扫描流程可视化，直接看到当前根目录、路径、文件数和目录数
-- 为每个盘提供 AI 解读，并在分析完成后继续对话追问
-- 用多界面工作台代替单一大屏：总览、单盘、扫描、AI、对话分别承载不同任务
+![总览界面](./docs/screenshots/settings-overview-dark.png)
 
-![Aegis Disk Command Overview](./docs/screenshots/overview.png)
+![设置界面](./docs/screenshots/settings-panel-dark.png)
 
-## 为什么现在更快
+## 这次版本解决了什么
 
-旧版本慢的核心原因不是“PowerShell 本身慢”，而是扫描策略重复了太多 I/O：
+- 不再针对某一台电脑硬编码路径或 API 配置
+- 本地私有配置拆到 `.aegis/`，不会进入公开仓库
+- 第一次联网配置完成后，会持续保存最近一次联网分析缓存，断网时可回退使用
+- AI 供应商不再只有 DeepSeek，改成可切换的供应商目录
+- 界面提供深色、浅色、跟随系统三种主题模式
+- 界面提供中英双语切换
+- 分析文风提供两种模式：
+  - 默认运维风格
+  - 治理报告风格，把每个磁盘当作重点治理地区来表述
+- 新增设置页，用于管理主题、语言、文风、供应商、接口地址、模型、密钥和离线缓存策略
 
-- 顶层目录扫一遍
-- 热点目录再递归扫一遍
-- 为了补充文件信息又重复扫一遍
-- AI 分析还会阻塞后续盘符扫描
+## 核心能力
 
-现在的实现做了两层优化：
+### 1. 快速扫描
 
-1. 扫描优化
+- 使用 `server/FastScanner.cs` 做单次遍历聚合扫描
+- PowerShell 仅作为编译和调用层，不再反复递归同一批目录
+- 扫描进度可视化，实时显示：
+  - 当前阶段
+  - 根任务进度
+  - 文件数
+  - 目录数
+  - 已见字节
+  - 当前根目录与当前路径
 
-- `server/FastScanner.cs` 使用 Win32 `FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`
-- 单次遍历目录树，在遍历过程中同步聚合：
-  - 顶层目录大小
-  - 聚焦目录下一层子项
-  - 显著大文件
-  - 扫描进度指标
-- `server/scan-drive.ps1` 只负责编译和调用扫描器，不再自己重复递归
+### 2. 多供应商 AI
 
-2. 分析优化
+当前内置供应商预设：
 
-- `server/index.mjs` 把扫描队列和 AI 队列拆开
-- 当前盘一旦完成扫描，下一块盘可以立即开始
-- AI 在后台异步补充结构化结论，不再阻塞扫盘流水线
+- 深度求索
+- 通义千问
+- 智谱
+- 豆包
+- 月之暗面
+- 开放智能
+- 谷歌
+- 克劳德
+- 开放路由
+- 硅基流动
 
-这套方案在当前机器上做过实测：`C:` 默认完整扫描约 `37.4 秒`，相较你之前反馈的约 `7 分钟`，延迟下降非常明显。
+默认供应商是 `深度求索`，其它供应商可以在设置页自行切换与修改。
 
-## 界面结构
+### 3. 本地私有配置与离线回退
 
-新版前端不是一个单纯大屏，而是一个分层驾驶舱：
+本项目会在仓库根目录下创建本地私有目录：
 
-- `全局中控`
-  - 看整体容量压力、跨盘机会、重复目录和标准化建议
-- `盘面细读`
-  - 看单盘顶层热点、聚焦目录和显著大文件
-- `扫描流程`
-  - 看实时进度条、当前路径、根任务推进、文件数和目录数
-- `AI 解读`
-  - 看当前盘 AI 总结、治理建议和跨盘全局摘要
-- `AI 对话`
-  - 在分析完成后继续追问“先删什么”“怎么迁移”“怎么标准化”
+```text
+.aegis/
+├─ settings.json           # 本地界面与运行设置
+├─ local.env              # 本地 API 密钥，不入库
+└─ last-online-cache.json # 最近一次联网分析缓存
+```
+
+规则如下：
+
+1. 第一次建议先完成网络和 AI 配置
+2. 后续每次联网分析成功后，会更新最近一次联网缓存
+3. 临时断网时，系统可以回退使用最近一次联网缓存
+4. 这些文件都已加入 `.gitignore`，不会被推送到公共仓库
+
+### 4. 多界面工作台
+
+- `总览`
+- `单盘`
+- `扫描`
+- `解读`
+- `对话`
+- `设置`
+
+不再只有一个纯大屏，而是按任务拆成不同界面。
 
 ## 项目结构
 
 ```text
 disk-command-cockpit/
 ├─ server/
-│  ├─ FastScanner.cs        # Win32 单次遍历扫描器
-│  ├─ scan-drive.ps1        # 编译并调用扫描器
-│  ├─ ai-analysis.mjs       # DeepSeek 结构化分析 + 对话
-│  └─ index.mjs             # API、队列、快照、实时状态
+│  ├─ FastScanner.cs
+│  ├─ scan-drive.ps1
+│  ├─ ai-analysis.mjs
+│  ├─ fallback-analysis.mjs
+│  ├─ local-store.mjs
+│  ├─ provider-catalog.mjs
+│  └─ index.mjs
 ├─ src/
-│  ├─ App.tsx               # 多视图工作台壳层
-│  ├─ components/
-│  │  └─ CockpitViews.tsx   # 各视图与可视化组件
-│  ├─ lib/format.ts         # 格式化工具
-│  ├─ types.ts              # 快照类型定义
-│  └─ index.css             # 深色科技驾驶舱样式
-└─ docs/
-   └─ step-by-step-log.md   # 过程记录
+│  ├─ App.tsx
+│  ├─ i18n.ts
+│  ├─ types.ts
+│  ├─ lib/format.ts
+│  ├─ components/CockpitViews.tsx
+│  └─ index.css
+├─ docs/
+│  ├─ change-highlights.md
+│  ├─ step-by-step-log.md
+│  └─ screenshots/
+└─ .env.example
 ```
 
 ## 启动方式
@@ -100,71 +130,68 @@ npm install
 npm run dev
 ```
 
-默认会同时启动：
-
-- 前端：Vite
-- 后端：`node server/index.mjs`
-
-### 3. 生产构建
+### 3. 生产模式
 
 ```bash
 npm run build
 npm run start
 ```
 
-## 环境变量
+默认地址：
 
-### 可选：启用 DeepSeek
-
-```powershell
-$env:DEEPSEEK_API_KEY="your_key"
+```text
+http://127.0.0.1:5525
 ```
 
-可选参数：
+## 配置方式
 
-```powershell
-$env:DEEPSEEK_BASE_URL="https://api.deepseek.com"
-$env:DEEPSEEK_MODEL="deepseek-chat"
-$env:DEEPSEEK_TIMEOUT_MS="12000"
-```
+### 优先方式：界面设置
 
-没有 `DEEPSEEK_API_KEY` 时，系统仍可工作，只是会回退到本地规则分析。
+启动后进入 `设置` 页面：
 
-## API 概览
+- 选择主题模式
+- 选择界面语言
+- 选择报告文风
+- 选择 AI 供应商
+- 配置接口地址、模型和密钥
+- 控制离线缓存策略
 
-- `GET /api/snapshot`
-  - 返回当前全量快照
-- `POST /api/rescan`
-  - 将指定盘符插入扫描队列
-- `POST /api/chat`
-  - 基于已完成扫描的盘做 AI 对话
-- `GET /api/health`
-  - 返回扫描器、AI 队列和模型状态
+### 兼容方式：环境变量
 
-## 当前分析逻辑
+仍支持传统环境变量方式，示例见：
 
-系统会先生成稳定的结构化扫描结果，再叠加 AI：
+- [`.env.example`](./.env.example)
 
-1. 盘符容量和健康度
-2. 顶层热点目录与文件
-3. 聚焦目录的下一层展开
-4. 显著大文件与缓存机会
-5. 跨盘重复项和标准化建议
-6. DeepSeek 对每个盘和全局进行结构化解读
-7. 分析完成后可继续围绕该盘追问
+但现在更推荐使用设置页，因为它会把本地配置和缓存统一保存到 `.aegis/`。
 
-## 已验证项
+## 验证结果
 
-- `npm run lint`
-- `npm run build`
+当前版本已验证：
+
 - `node --check server/index.mjs`
 - `node --check server/ai-analysis.mjs`
-- `C:` 默认完整扫描实测约 `37.4 秒`
-- `GET /api/health` 返回扫描与 AI 状态正常
+- `npm run lint`
+- `npm run build`
+- `/api/settings`
+- `/api/providers`
 
-## 注意事项
+同时保留了上一轮的扫描优化结果：
 
-- 当前设计目标是“只读分析优先”，不会自动删除或迁移文件
-- 扫描速度仍会受到盘符大小、目录碎片度、权限限制和后台占用影响
-- AI 对话只在对应盘扫描完成后可用
-- 首次启动时 `server/scan-drive.ps1` 会在项目目录下的 `.runtime/` 编译扫描器，不会写到 `C:` 系统盘
+- 默认完整扫描 `C:` 约 `37.4 秒`
+
+## Figma 说明
+
+这轮需求里包含了“先在 Figma 设计再复现”。当前会话环境没有可用的 Figma MCP / 设计文件连接，所以这次没有直接写入 Figma 文件，而是先在代码里完成了新的主题、布局和设置体系。后续如果补上 Figma 连接，我可以继续把当前界面同步成 Figma 设计稿。
+
+## 参考文档
+
+本轮供应商和接口策略参考了各家官方文档或官方站点：
+
+- DeepSeek Chat Completions: https://api-docs.deepseek.com/api/create-chat-completion/
+- OpenAI API Docs: https://developers.openai.com/api/
+- Gemini OpenAI Compatibility: https://ai.google.dev/gemini-api/docs/openai
+- Anthropic Messages Examples: https://docs.anthropic.com/en/api/messages-examples
+- DashScope OpenAI 兼容模式: https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope
+- Moonshot 官方博客: https://platform.moonshot.cn/blog
+- 火山引擎文档中心: https://www.volcengine.com/docs
+- 智谱开放平台: https://open.bigmodel.cn/
