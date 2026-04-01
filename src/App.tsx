@@ -65,54 +65,79 @@ function toneClass(tone: string) {
   return `tone-${tone}`
 }
 
+function labelDriveHealth(health: string) {
+  if (health === 'critical') return '严重'
+  if (health === 'warning') return '预警'
+  return '稳定'
+}
+
+function labelAnalysisStatus(status: string) {
+  if (status === 'ready') return '已就绪'
+  if (status === 'scanning') return '扫描中'
+  if (status === 'error') return '异常'
+  return '排队中'
+}
+
+function analysisTone(status: string) {
+  if (status === 'error') return 'critical'
+  if (status === 'scanning') return 'warning'
+  if (status === 'ready') return 'stable'
+  return 'info'
+}
+
+function formatScanDuration(value: number | null) {
+  if (!value) return '待分析'
+  return `${(value / 1000).toFixed(1)} 秒`
+}
+
 function buildDriveGuidance(drive: DriveSnapshot) {
   const items = []
 
   if (drive.usePercent >= 92) {
     items.push({
-      title: 'Reserve is critically thin',
+      title: '可用余量已逼近极限',
       detail:
-        'This drive is running below a comfortable safety margin. Prioritize recycle-bin release, duplicate install review, and installer/archive cleanup.',
+        '当前盘的安全缓冲已经很薄，优先检查回收站、安装包、下载归档和重复安装内容，先拿回最快释放空间的一批容量。',
       tone: 'critical',
     })
   } else if (drive.usePercent >= 82) {
     items.push({
-      title: 'Reserve is entering the warning band',
+      title: '已进入容量预警区间',
       detail:
-        'There is still room to operate, but cleanup should happen before the next large install, dataset import, or sync burst.',
+        '暂时还能继续工作，但在下一次大型安装、素材导入或云同步高峰之前，最好先完成一轮有针对性的清理。',
       tone: 'warning',
     })
   } else {
     items.push({
-      title: 'Operational reserve is stable',
+      title: '当前盘面余量相对稳定',
       detail:
-        'This drive still has runway. Use it as a reference point when standardizing folders across the rest of the fleet.',
+        '这个盘还有比较从容的余量，可以把它作为跨盘标准化时的参考面，承接更明确的职责分区。',
       tone: 'stable',
     })
   }
 
   if (drive.analysisStatus !== 'ready') {
     items.push({
-      title: 'Deep scan is still warming up',
+      title: '深度分析仍在持续补齐',
       detail:
-        'Immediate capacity telemetry is live now; directory density, focus layers, and artifact intelligence will fill in as the background scan completes.',
+        '容量遥测已经实时在线，目录密度、焦点目录和大文件工件会随着后台扫描完成逐步填充进来。',
       tone: 'info',
     })
   } else if (drive.opportunities.length) {
     items.push({
-      title: 'Actionable cleanup vectors detected',
+      title: '发现可执行的清理机会',
       detail:
-        'The latest scan found directories that look like caches, download depots, media payloads, or duplicated tool surfaces worth reviewing first.',
+        '当前盘已经识别出缓存区、下载仓、媒体中间件或工具链重复面，适合优先从高收益目录开始处理。',
       tone: 'warning',
     })
   }
 
   items.push({
-    title: 'Keep the filesystem role explicit',
+    title: '尽量保持盘面角色单一',
     detail:
       drive.fsType === 'NTFS'
-        ? 'Use this surface for one clear responsibility only: games, cloud sync, development, archives, or media production. Mixing all of them accelerates fragmentation and drift.'
-        : 'Keep filesystem role boundaries sharp so cleanup decisions stay predictable and safe.',
+        ? '建议一个盘只承担一种主职责，比如游戏库、云同步、开发工具、归档仓或媒体生产。角色混杂越多，后续越容易出现碎片化和漂移。'
+        : '尽量让文件系统边界保持清晰，这样清理和迁移决策会更稳定，也更不容易误伤正在使用的内容。',
     tone: 'info',
   })
 
@@ -140,15 +165,13 @@ function App() {
       try {
         const response = await fetch('/api/snapshot', { cache: 'no-store' })
         if (!response.ok) {
-          throw new Error(`Snapshot request failed with ${response.status}.`)
+          throw new Error(`快照请求失败，状态码 ${response.status}。`)
         }
 
         const data = (await response.json()) as Snapshot
         applySnapshot(data)
       } catch (error) {
-        setFetchError(
-          error instanceof Error ? error.message : 'Unable to reach the local disk service.',
-        )
+        setFetchError(error instanceof Error ? error.message : '无法连接本地磁盘分析服务。')
       }
     }
 
@@ -183,7 +206,9 @@ function App() {
   const topOpportunities = deferredSnapshot?.crossDrive.topOpportunities ?? []
   const duplicates = deferredSnapshot?.crossDrive.duplicateTopLevelNames ?? []
   const standards = deferredSnapshot?.crossDrive.standardizationSuggestions ?? []
-  const liveClock = deferredSnapshot?.generatedAt ? formatUpdatedAt(deferredSnapshot.generatedAt) : 'Booting'
+  const liveClock = deferredSnapshot?.generatedAt
+    ? formatUpdatedAt(deferredSnapshot.generatedAt)
+    : '启动中'
   const driveGuidance = activeDrive ? buildDriveGuidance(activeDrive) : []
 
   async function queueRescan(letter: string) {
@@ -205,7 +230,7 @@ function App() {
         <BackgroundField />
         <main className="loading-stage">
           <div className="boot-ring" />
-          <p>Initializing disk telemetry mesh...</p>
+          <p>正在初始化本地磁盘遥测网格...</p>
         </main>
       </div>
     )
@@ -219,19 +244,19 @@ function App() {
         <div className="brand-block">
           <div className="brand-mark" />
           <div>
-            <p className="eyebrow">LOCAL COMMAND SURFACE</p>
+            <p className="eyebrow">本地磁盘指挥舱</p>
             <h1>Aegis Disk Command</h1>
           </div>
         </div>
 
         <div className="global-metrics">
           <MetricCard
-            label="Fleet Capacity"
+            label="总容量"
             value={formatBytes(deferredSnapshot.system.totalBytes)}
-            hint={`${deferredSnapshot.system.driveCount} drives online`}
+            hint={`在线磁盘 ${deferredSnapshot.system.driveCount} 个`}
           />
           <MetricCard
-            label="Free Reserve"
+            label="当前剩余"
             value={formatBytes(deferredSnapshot.system.freeBytes)}
             hint={formatPercent(
               deferredSnapshot.system.totalBytes === 0
@@ -240,23 +265,23 @@ function App() {
             )}
           />
           <MetricCard
-            label="CPU Pulse"
+            label="CPU 脉冲"
             value={formatPercent(deferredSnapshot.system.cpuLoadPercent)}
-            hint={`Memory ${formatPercent(deferredSnapshot.system.memoryUsedPercent)}`}
+            hint={`内存占用 ${formatPercent(deferredSnapshot.system.memoryUsedPercent)}`}
           />
           <MetricCard
-            label="Scan Queue"
+            label="扫描队列"
             value={formatNumber(deferredSnapshot.system.queueDepth)}
             hint={
               deferredSnapshot.system.activeScan
-                ? `Scanning ${deferredSnapshot.system.activeScan}:`
-                : 'Idle'
+                ? `${deferredSnapshot.system.activeScan}: 扫描中`
+                : '空闲'
             }
           />
           <MetricCard
-            label="Telemetry Stamp"
+            label="刷新时间"
             value={liveClock}
-            hint={`${deferredSnapshot.system.historySamples} samples retained`}
+            hint={`保留样本 ${deferredSnapshot.system.historySamples} 条`}
           />
         </div>
       </header>
@@ -279,7 +304,7 @@ function App() {
             </div>
             <div className="drive-tile__values">
               <b>{formatPercent(drive.usePercent)}</b>
-              <small>{formatBytes(drive.freeBytes)} free</small>
+              <small>剩余 {formatBytes(drive.freeBytes)}</small>
             </div>
           </button>
         ))}
@@ -288,9 +313,9 @@ function App() {
       <main className="console-grid">
         <section className="panel panel-stack panel-left">
           <PanelHeader
-            eyebrow="Operational Queue"
-            title="Cleanup Pressure"
-            detail="High-yield targets inferred from live scans."
+            eyebrow="运行队列"
+            title="清理压力"
+            detail="根据实时扫描识别出的高收益机会位。"
           />
           <OpportunityList items={topOpportunities.slice(0, 7)} />
         </section>
@@ -299,76 +324,86 @@ function App() {
           {activeDrive && (
             <>
               <PanelHeader
-                eyebrow="Central Analysis Core"
-                title={`${activeDrive.letter}: Drive Intelligence`}
-                detail={`${formatBytes(activeDrive.usedBytes)} used of ${formatBytes(activeDrive.totalBytes)} · scanned ${formatUpdatedAt(activeDrive.lastScannedAt)}`}
+                eyebrow="中央分析核心"
+                title={`${activeDrive.letter}: 盘面中枢`}
+                detail={`已用 ${formatBytes(activeDrive.usedBytes)} / 总量 ${formatBytes(activeDrive.totalBytes)}，更新于 ${formatUpdatedAt(activeDrive.lastScannedAt)}`}
                 action={
                   <button
                     className="ghost-button"
                     disabled={rescanTarget === activeDrive.letter}
                     onClick={() => queueRescan(activeDrive.letter)}
                   >
-                    {rescanTarget === activeDrive.letter ? 'Queueing…' : 'Rescan'}
+                    {rescanTarget === activeDrive.letter ? '已加入队列...' : '重新扫描'}
                   </button>
                 }
               />
 
               <div className="main-panel-grid">
                 <div className="core-orbital">
-                  <div className="drive-orb" style={gaugeStyle(activeDrive.letter, activeDrive.usePercent)}>
+                  <div
+                    className="drive-orb"
+                    style={gaugeStyle(activeDrive.letter, activeDrive.usePercent)}
+                  >
                     <div className="drive-orb__inner">
-                      <span className="eyebrow">Usage Envelope</span>
+                      <span className="eyebrow">占用包络</span>
                       <strong>{formatPercent(activeDrive.usePercent)}</strong>
-                      <small>{formatBytes(activeDrive.freeBytes)} reserve</small>
+                      <small>可用余量 {formatBytes(activeDrive.freeBytes)}</small>
                     </div>
                   </div>
 
                   <div className="orbital-stats">
-                    <StatLine label="Health Band" value={activeDrive.health} tone={activeDrive.health} />
-                    <StatLine label="Analysis State" value={activeDrive.analysisStatus} tone={activeDrive.analysisStatus === 'error' ? 'critical' : activeDrive.analysisStatus === 'scanning' ? 'warning' : 'stable'} />
                     <StatLine
-                      label="Scan Span"
-                      value={
-                        activeDrive.scanDurationMs
-                          ? `${(activeDrive.scanDurationMs / 1000).toFixed(1)} s`
-                          : 'Pending'
-                      }
+                      label="健康等级"
+                      value={labelDriveHealth(activeDrive.health)}
+                      tone={activeDrive.health}
                     />
-                    <StatLine label="Filesystem" value={activeDrive.fsType} />
+                    <StatLine
+                      label="分析状态"
+                      value={labelAnalysisStatus(activeDrive.analysisStatus)}
+                      tone={analysisTone(activeDrive.analysisStatus)}
+                    />
+                    <StatLine
+                      label="扫描耗时"
+                      value={formatScanDuration(activeDrive.scanDurationMs)}
+                    />
+                    <StatLine label="文件系统" value={activeDrive.fsType} />
                   </div>
                 </div>
 
                 <div className="trend-stage">
-                  <h3>Fleet Free-Space Timeline</h3>
-                  <p>Runtime memory of drive reserve levels captured every five seconds.</p>
+                  <h3>全盘剩余空间时间线</h3>
+                  <p>每 5 秒保留一次剩余容量变化，用于观察各盘的实时压力走势。</p>
                   <TrendChart drives={drives} history={history} />
                 </div>
               </div>
 
               <div className="data-row">
                 <div className="subpanel">
-                  <h3>Root Density Map</h3>
-                  <p>Largest top-level surfaces inside the selected drive.</p>
-                  <EntryBars entries={activeDrive.topEntries.slice(0, 8)} totalBytes={activeDrive.totalBytes} />
+                  <h3>根目录密度图</h3>
+                  <p>展示当前盘根目录下占用最高的一层结构。</p>
+                  <EntryBars
+                    entries={activeDrive.topEntries.slice(0, 8)}
+                    totalBytes={activeDrive.totalBytes}
+                  />
                 </div>
 
                 <div className="subpanel">
-                  <h3>Focus Directories</h3>
-                  <p>One layer deeper into the heaviest areas.</p>
+                  <h3>焦点目录</h3>
+                  <p>继续向下展开一层，定位最重区域的内部构成。</p>
                   <FocusDirectoryList groups={activeDrive.focusDirectories.slice(0, 4)} />
                 </div>
               </div>
 
               <div className="data-row">
                 <div className="subpanel">
-                  <h3>Drive Guidance</h3>
-                  <p>Action framing that adapts to the selected drive state.</p>
+                  <h3>盘面建议</h3>
+                  <p>根据当前盘状态动态生成的处理方向。</p>
                   <GuidanceDeck items={driveGuidance} />
                 </div>
 
                 <div className="subpanel">
-                  <h3>Drive Opportunity Queue</h3>
-                  <p>Targets detected inside the selected drive.</p>
+                  <h3>当前盘机会队列</h3>
+                  <p>选中盘内识别出的缓存、下载仓和重复面线索。</p>
                   <OpportunityList items={activeDrive.opportunities.slice(0, 4)} />
                 </div>
               </div>
@@ -378,9 +413,9 @@ function App() {
 
         <section className="panel panel-stack panel-right">
           <PanelHeader
-            eyebrow="Topology Signals"
-            title="Cross-Drive Structure"
-            detail="Duplicate roots and standardization patterns."
+            eyebrow="拓扑信号"
+            title="跨盘结构"
+            detail="查看重名顶层目录和标准化整理方向。"
           />
           <DuplicateList items={duplicates.slice(0, 6)} />
           <div className="divider" />
@@ -389,18 +424,18 @@ function App() {
 
         <section className="panel panel-bottom-left">
           <PanelHeader
-            eyebrow="Visible Artifacts"
-            title="Large Files in Current View"
-            detail="Root and focus-directory files surfaced by the latest scan."
+            eyebrow="可见工件"
+            title="当前视图中的大文件"
+            detail="来自根目录与焦点目录的一批高占用文件。"
           />
           <FileList items={activeDrive?.notableFiles ?? []} />
         </section>
 
         <section className="panel panel-bottom-right">
           <PanelHeader
-            eyebrow="System Relay"
-            title="Runtime State"
-            detail="Live service conditions for the local monitoring stack."
+            eyebrow="系统中继"
+            title="运行状态"
+            detail="本地监控栈的实时服务状态与刷新情况。"
           />
           <RuntimeCluster snapshot={deferredSnapshot} fetchError={fetchError} />
         </section>
@@ -479,7 +514,7 @@ function StatLine({
 
 function OpportunityList({ items }: { items: Opportunity[] }) {
   if (!items.length) {
-    return <EmptyState label="No cleanup signals yet. Initial analysis is still warming up." />
+    return <EmptyState label="暂未发现新的清理信号，后台分析仍在持续补齐。" />
   }
 
   return (
@@ -510,7 +545,7 @@ function EntryBars({
   totalBytes: number
 }) {
   if (!entries.length) {
-    return <EmptyState label="Waiting for directory spectrum..." />
+    return <EmptyState label="正在等待目录频谱完成首轮构建..." />
   }
 
   return (
@@ -536,7 +571,7 @@ function EntryBars({
 
 function FocusDirectoryList({ groups }: { groups: DriveSnapshot['focusDirectories'] }) {
   if (!groups.length) {
-    return <EmptyState label="Focus layers will appear after the first deep scan." />
+    return <EmptyState label="首次深度扫描完成后，这里会显示更细的内部结构。" />
   }
 
   return (
@@ -563,7 +598,7 @@ function FocusDirectoryList({ groups }: { groups: DriveSnapshot['focusDirectorie
 
 function DuplicateList({ items }: { items: DuplicateNameGroup[] }) {
   if (!items.length) {
-    return <EmptyState label="No cross-drive duplicates detected yet." />
+    return <EmptyState label="当前还没有识别出明显的跨盘重名顶层目录。" />
   }
 
   return (
@@ -572,11 +607,11 @@ function DuplicateList({ items }: { items: DuplicateNameGroup[] }) {
         <article key={item.name} className="signal-item">
           <div className="signal-item__head">
             <strong>{item.name}</strong>
-            <small>{item.drives.join(' · ')}</small>
+            <small>{item.drives.map((drive) => `${drive}:`).join(' / ')}</small>
           </div>
           <p>{shortPath(item.paths.join(' | '))}</p>
           <div className="signal-item__foot">
-            <span>Combined footprint</span>
+            <span>合计占用</span>
             <b>{formatBytes(item.combinedBytes)}</b>
           </div>
         </article>
@@ -586,6 +621,10 @@ function DuplicateList({ items }: { items: DuplicateNameGroup[] }) {
 }
 
 function StandardList({ items }: { items: StandardizationSuggestion[] }) {
+  if (!items.length) {
+    return <EmptyState label="跨盘标准化建议会在分析完成后显示。" />
+  }
+
   return (
     <div className="standards-list">
       {items.map((item) => (
@@ -600,7 +639,7 @@ function StandardList({ items }: { items: StandardizationSuggestion[] }) {
 
 function FileList({ items }: { items: Entry[] }) {
   if (!items.length) {
-    return <EmptyState label="No large file artifacts surfaced yet." />
+    return <EmptyState label="暂未浮现新的大文件工件。" />
   }
 
   return (
@@ -627,21 +666,21 @@ function RuntimeCluster({
 }) {
   return (
     <div className="runtime-grid">
-      <StatLine label="Host" value={snapshot.system.hostName} />
-      <StatLine label="Platform" value={snapshot.system.platform} />
-      <StatLine label="Uptime" value={`${snapshot.system.uptimeMinutes} min`} />
+      <StatLine label="主机名" value={snapshot.system.hostName} />
+      <StatLine label="平台" value={snapshot.system.platform} />
+      <StatLine label="运行时长" value={`${snapshot.system.uptimeMinutes} 分钟`} />
       <StatLine
-        label="Active Scan"
-        value={snapshot.system.activeScan ? `${snapshot.system.activeScan}:` : 'Idle'}
+        label="活动扫描"
+        value={snapshot.system.activeScan ? `${snapshot.system.activeScan}: 扫描中` : '空闲'}
         tone={snapshot.system.activeScan ? 'warning' : 'stable'}
       />
       <StatLine
-        label="Fetch State"
-        value={fetchError ? 'Degraded' : 'Nominal'}
+        label="拉取状态"
+        value={fetchError ? '降级' : '正常'}
         tone={fetchError ? 'critical' : 'stable'}
       />
       <div className="runtime-note">
-        {fetchError || 'Data refreshes every five seconds. Deep directory scans rotate in the background.'}
+        {fetchError || '数据每 5 秒刷新一次，深度目录扫描会在后台轮转执行。'}
       </div>
     </div>
   )
@@ -680,7 +719,7 @@ function TrendChart({
 
   return (
     <div className="trend-chart">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Fleet free-space timeline">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="全盘剩余空间时间线">
         {Array.from({ length: 5 }).map((_, index) => {
           const y = padding + ((height - padding * 2) / 4) * index
           return <line key={y} x1={padding} y1={y} x2={width - padding} y2={y} className="grid-line" />
@@ -723,7 +762,7 @@ function TrendChart({
               style={{ background: pickDriveColor(drive.letter) }}
             />
             <strong>{drive.letter}:</strong>
-            <span>{formatBytes(drive.freeBytes)} free</span>
+            <span>剩余 {formatBytes(drive.freeBytes)}</span>
           </div>
         ))}
       </div>

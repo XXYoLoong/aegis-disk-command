@@ -1,96 +1,97 @@
 # Aegis Disk Command
 
-A local-first disk telemetry cockpit for Windows drives. It pairs a live Node scanning service with a cinematic React dashboard so you can watch every drive as if it were part of a control console instead of a flat file explorer.
+一个面向 Windows 的本地优先磁盘指挥舱。它把 Node 实时扫描服务和 React 驾驶舱界面组合在一起，让你可以像看运维中控一样持续观察所有盘符，而不是只靠平面的资源管理器来判断磁盘状态。
 
-## What It Does
+## 项目能力
 
-- Monitors all mounted Windows filesystem drives in real time
-- Tracks total, used, free, and pressure levels across the fleet
-- Scans each drive in the background for top-level density, focus directories, and visible large files
-- Highlights cleanup opportunities such as recycle bins, download depots, cache zones, sync-heavy folders, toolchain sprawl, and virtualization payloads
-- Surfaces cross-drive duplication patterns and standardization guidance
-- Presents everything in a dark operations-cockpit UI tuned for high-density situational awareness
+- 实时监控所有已挂载的 Windows 文件系统盘
+- 汇总总量、已用、剩余和容量压力
+- 后台轮转扫描每个盘的顶层目录、焦点目录和可见大文件
+- 自动识别回收站、缓存区、下载仓、同步目录、工具链堆积、虚拟磁盘和游戏库等高占用区域
+- 给出跨盘重名目录、标准化整理建议和优先清理线索
+- 使用深蓝黑驾驶舱式界面呈现高密度、可管理、可洞察的实时信息
 
-## Design Direction
+## 视觉方向
 
-- Base tone: deep blue-black control-room surface
-- Accent language: restrained cyan, low-saturation violet, and cool electric blue
-- Layout model: central command panel with lighter sidecar intelligence modules
-- Motion model: low-noise, pulse-based, system-style presence rather than consumer-grade flash
+- 基底采用深蓝黑控制室氛围
+- 点缀使用低饱和蓝紫和青色冷光
+- 布局采用中控式主面板加两侧分析模块
+- 动效强调轻量滑入、脉冲呼吸和低噪声流光，而不是消费级炫技
 
-## Stack
+## 技术栈
 
 - React 19
 - TypeScript
 - Vite
 - Express 5
 - `systeminformation`
-- Windows PowerShell for directory analysis
+- Windows PowerShell 目录分析脚本
 
-## Project Structure
+## 项目结构
 
 ```text
 disk-command-cockpit/
-├─ server/
-│  ├─ index.mjs
-│  └─ scan-drive.ps1
-├─ src/
-│  ├─ lib/
-│  ├─ App.tsx
-│  ├─ index.css
-│  ├─ main.tsx
-│  └─ types.ts
-├─ dist/
-└─ package.json
+  server/
+    index.mjs
+    scan-drive.ps1
+  src/
+    lib/
+    App.tsx
+    index.css
+    main.tsx
+    types.ts
+  dist/
+  package.json
 ```
 
-## Run Locally
+## 本地运行
 
 ```bash
 npm install
 npm run dev
 ```
 
-This starts:
+启动后会得到两个服务：
 
-- the local telemetry service at `http://127.0.0.1:5525`
-- the Vite client at `http://127.0.0.1:5173`
+- 本地磁盘分析服务：`http://127.0.0.1:5525`
+- Vite 开发端口：`http://127.0.0.1:5173`
 
-For a production-style local run:
+如果想按生产模式在本机运行：
 
 ```bash
 npm run build
 npm run start
 ```
 
-Then open:
+然后打开：
 
 ```text
 http://127.0.0.1:5525
 ```
 
-## How Scanning Works
+## 扫描机制
 
-- Live filesystem capacity refresh: every 5 seconds
-- Background deep drive analysis: queued and processed sequentially
-- Drive scan outputs:
-  - top-level directory and file footprint
-  - one-level-deeper focus directory breakdown
-  - visible large file artifacts
-  - heuristic cleanup and standardization suggestions
+- 磁盘容量实时刷新频率：每 5 秒
+- 深度扫描策略：后台排队，按盘顺序执行
+- 每次扫描会输出：
+  - 根目录顶层目录和文件占用
+  - 更深一层的焦点目录拆解
+  - 当前可见的大文件工件
+  - 启发式清理机会和跨盘标准化建议
 
-This intentionally keeps the app responsive on large disks while still building richer analysis over time.
+这样的设计可以在保证大盘扫描可用性的同时，让页面始终保持流畅响应，并随着时间逐步补齐更完整的分析视图。
 
-## Notes
+## 说明
 
-- The project is local-first and does not upload disk contents anywhere
-- The UI reads drive metadata and directory structure; it does not delete or move files
-- npm cache for this workspace is configured to stay on `F:` via `.npmrc`
+- 项目是本地优先的，不会把磁盘内容上传到任何远端
+- 当前界面只读取盘符元数据和目录结构，不会删除或移动文件
+- 这个工作区的 npm 缓存已经通过 `.npmrc` 固定在 `F:`，不会落到 `C:`
+- 扫描脚本已显式启用 UTF-8 输出，用来降低中文目录名乱码的风险
 
-## Future Upgrades
+## 后续可扩展方向
 
-- Delta scanning and persistent historical telemetry
-- Drive-specific deep scan triggers with progress bars
-- Treemap and sunburst views for large folder hierarchies
-- Exportable cleanup reports
-- Optional screenshot capture and scheduled reporting
+- 增量扫描与持久化历史遥测
+- 带进度反馈的单盘深度扫描
+- Treemap、Sunburst 等更强的空间占用可视化
+- Markdown / JSON 报告导出
+- 定时截图与定时报告

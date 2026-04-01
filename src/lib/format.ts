@@ -17,17 +17,20 @@ export function formatPercent(value: number) {
 }
 
 export function formatNumber(value: number) {
-  return new Intl.NumberFormat('en-US').format(value)
+  return new Intl.NumberFormat('zh-CN').format(value)
 }
 
 export function formatUpdatedAt(value: string | null) {
-  if (!value) return 'Awaiting first analysis'
-  return new Intl.DateTimeFormat('en-US', {
+  if (!value) return '等待首次分析'
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    month: 'short',
-    day: '2-digit',
+    hour12: false,
   }).format(new Date(value))
 }
 

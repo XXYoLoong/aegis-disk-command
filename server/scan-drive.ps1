@@ -8,6 +8,10 @@ param(
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
+try { chcp 65001 > $null } catch {}
+try { [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $root = "$DriveLetter`:\"
 
 function Get-DirSize {

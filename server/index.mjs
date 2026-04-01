@@ -72,109 +72,149 @@ function rankSeverity(weight) {
   return 'info'
 }
 
+function includesAny(text, keywords) {
+  return keywords.some((keyword) => text.includes(keyword))
+}
+
 function inspectName(rawName) {
   const name = rawName.toLowerCase()
 
-  if (name.includes('$recycle')) {
+  if (includesAny(name, ['$recycle', '回收站'])) {
     return {
       category: 'reclaim',
-      title: 'Recycle queue ready for purge',
-      action: 'Empty recycle content after confirming nothing needs recovery.',
+      title: '回收区可直接回收',
+      action: '确认没有需要恢复的文件后，可优先清空这一块内容，通常风险最低、释放最快。',
       weight: 2.7,
     }
   }
 
   if (
-    name.includes('cache') ||
-    name.includes('temp') ||
-    name.includes('deliveryoptimization')
+    includesAny(name, [
+      'cache',
+      'temp',
+      'deliveryoptimization',
+      '缓存',
+      '临时',
+      'tmp',
+      'logs',
+    ])
   ) {
     return {
       category: 'cache',
-      title: 'Cache-heavy area detected',
-      action: 'Purge cache files or move hot caches to a dedicated utility zone.',
+      title: '检测到高占用缓存区',
+      action: '优先确认是否属于缓存、日志或临时文件，能删的删，常驻缓存建议归并到专门的缓存区。',
       weight: 1.9,
     }
   }
 
   if (
-    name.includes('download') ||
-    name.includes('softstore') ||
-    name.includes('installer') ||
-    name.includes('archive')
+    includesAny(name, [
+      'download',
+      'softstore',
+      'installer',
+      'archive',
+      'setup',
+      '下载',
+      '安装包',
+      '压缩包',
+      '软件包',
+    ])
   ) {
     return {
       category: 'download',
-      title: 'Installer and download depot',
-      action: 'Deduplicate installers and keep only the versions still needed.',
+      title: '下载仓或安装包堆积',
+      action: '建议去重保留仍需使用的版本，其余安装包、镜像和历史归档可转移或清理。',
       weight: 1.8,
     }
   }
 
   if (
-    name.includes('video') ||
-    name.includes('jiany') ||
-    name.includes('bililive') ||
-    name.includes('draft')
+    includesAny(name, [
+      'video',
+      'jiany',
+      'bililive',
+      'draft',
+      'clip',
+      'record',
+      '视频',
+      '录屏',
+      '剪映',
+      '素材',
+    ])
   ) {
     return {
       category: 'media',
-      title: 'Large media production footprint',
-      action: 'Archive finished media into cold storage and keep only active worksets local.',
+      title: '媒体生产区占用较高',
+      action: '已完成的录屏、素材和中间产物建议转入冷存储，本地只保留正在编辑的工作集。',
       weight: 1.6,
     }
   }
 
   if (
-    name.includes('docker') ||
-    name.includes('wsl') ||
-    name.includes('vhd') ||
-    name.includes('vmdk') ||
-    name.includes('emulator') ||
-    name.includes('hyperv')
+    includesAny(name, [
+      'docker',
+      'wsl',
+      'vhd',
+      'vmdk',
+      'emulator',
+      'hyperv',
+      'virtual',
+      '虚拟机',
+      '镜像',
+    ])
   ) {
     return {
       category: 'virtualization',
-      title: 'Virtual disk or emulator payload',
-      action: 'Confirm whether the VM image is still live before pruning or relocating it.',
+      title: '虚拟磁盘或模拟器负载',
+      action: '先确认镜像是否仍在使用，再决定精简、归档或迁移，避免误删正在运行的环境。',
       weight: 1.5,
     }
   }
 
   if (
-    name.includes('huawei') ||
-    name.includes('deveco') ||
-    name.includes('openharmony') ||
-    name.includes('sdk')
+    includesAny(name, [
+      'huawei',
+      'deveco',
+      'openharmony',
+      'sdk',
+      'android',
+      'toolchain',
+      '工具链',
+      '开发',
+    ])
   ) {
     return {
       category: 'toolchain',
-      title: 'Heavy SDK or toolchain zone',
-      action: 'Consolidate toolchains to one managed root and retire dormant versions.',
+      title: '工具链或 SDK 区域偏重',
+      action: '建议把 DevEco、Huawei SDK、OpenHarmony 和模拟器资源归并到统一工具根目录，停用版本转入归档层。',
       weight: 1.4,
     }
   }
 
   if (
-    name.includes('onedrive') ||
-    name.includes('desktop') ||
-    name.includes('documents') ||
-    name.includes('文档') ||
-    name.includes('桌面')
+    includesAny(name, [
+      'onedrive',
+      'desktop',
+      'documents',
+      'sync',
+      '文档',
+      '桌面',
+      '同步',
+    ])
   ) {
     return {
       category: 'sync',
-      title: 'Cloud sync payload is carrying large content',
-      action: 'Move large transient files out of synced folders to reduce sync pressure.',
+      title: '同步目录承载了较大内容',
+      action: '建议把大体积临时文件、安装包和素材移出同步区，避免云同步长期承压。',
       weight: 1.4,
     }
   }
 
-  if (name.includes('steam') || name.includes('wegame') || name.includes('mihoyo')) {
+  if (includesAny(name, ['steam', 'wegame', 'mihoyo', 'game', '游戏'])) {
     return {
       category: 'games',
-      title: 'Major game library footprint',
-      action: 'Rationalize libraries and avoid keeping duplicate platform installs.',
+      title: '游戏库占用明显',
+      action: '建议按平台统一管理游戏库，避免同一游戏在独立版、Steam、WeGame 等多处重复安装。',
       weight: 1.2,
     }
   }
@@ -230,24 +270,24 @@ function deriveCrossDrive(drives) {
 
   const standardizationSuggestions = [
     {
-      title: 'Unify download depots',
+      title: '统一下载仓入口',
       detail:
-        'Route installer archives, BaiduNetdisk drops, Lenovo package downloads, and ad-hoc setup files into one managed archive root.',
+        '安装包、网盘落地文件、LenovoSoftstore 下载物和临时 setup 建议汇总到一个受控归档根目录，避免多盘散落。',
     },
     {
-      title: 'Separate sync zones from transient data',
+      title: '同步区和临时区分层',
       detail:
-        'Keep datasets, screen captures, and installer bundles out of OneDrive-managed surfaces so cloud sync stays intentional.',
+        'OneDrive、桌面、文档等同步面只保留明确需要云同步的内容，大型素材、录屏和安装包不要长期停留在同步目录。',
     },
     {
-      title: 'Collapse duplicate toolchains',
+      title: '收拢重复工具链',
       detail:
-        'DevEco, Huawei SDKs, OpenHarmony resources, and emulator images should live in one canonical tools root with archived versions outside the active path.',
+        'DevEco、Huawei SDK、OpenHarmony 资源和模拟器镜像建议放入统一工具根目录，活动版本与历史归档分层管理。',
     },
     {
-      title: 'Normalize game libraries by platform',
+      title: '按平台规范游戏库',
       detail:
-        'Use one platform library per title and avoid parallel standalone, Steam, and WeGame copies of the same game.',
+        '同一游戏尽量只保留一个平台库，减少独立版、Steam、WeGame 并行安装造成的重复占用。',
     },
   ]
 
@@ -284,7 +324,7 @@ async function refreshLiveSystem() {
       return {
         letter,
         mount,
-        fsType: item.type || item.fsType || 'unknown',
+        fsType: item.type || item.fsType || '未知',
         totalBytes,
         usedBytes,
         freeBytes,
@@ -427,8 +467,7 @@ async function processQueue() {
       analysisStatus: 'error',
       lastScannedAt: previous.lastScannedAt ?? null,
       scanDurationMs: null,
-      scanError:
-        error instanceof Error ? error.message : 'Drive scan failed unexpectedly.',
+      scanError: error instanceof Error ? error.message : '磁盘扫描发生未知错误。',
       topEntries: previous.topEntries ?? [],
       focusDirectories: previous.focusDirectories ?? [],
       notableFiles: previous.notableFiles ?? [],
@@ -455,7 +494,7 @@ app.get('/api/snapshot', (_req, res) => {
 app.post('/api/rescan', async (req, res) => {
   const requested = String(req.body?.drive ?? '').trim().toUpperCase()
   if (!requested || !/^[A-Z]$/.test(requested)) {
-    res.status(400).json({ ok: false, message: 'A valid drive letter is required.' })
+    res.status(400).json({ ok: false, message: '需要提供有效的盘符字母。' })
     return
   }
 
@@ -497,11 +536,11 @@ async function boot() {
   }, 1500)
 
   app.listen(PORT, () => {
-    console.log(`Disk Command Cockpit server listening on http://127.0.0.1:${PORT}`)
+    console.log(`Aegis Disk Command 已启动: http://127.0.0.1:${PORT}`)
   })
 }
 
 boot().catch((error) => {
-  console.error('Failed to boot Disk Command Cockpit:', error)
+  console.error('Aegis Disk Command 启动失败:', error)
   process.exitCode = 1
 })
