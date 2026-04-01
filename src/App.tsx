@@ -32,7 +32,10 @@ function pickDriveColor(letter: string) {
 }
 
 function pickDefaultDrive(drives: DriveSnapshot[]) {
-  return [...drives].sort((a, b) => b.usePercent - a.usePercent)[0]?.letter ?? ''
+  const ranked = [...drives]
+  const ready = ranked.filter((drive) => drive.analysisStatus === 'ready' && drive.topEntries.length)
+  const pool = ready.length ? ready : ranked
+  return pool.sort((a, b) => b.usePercent - a.usePercent)[0]?.letter ?? ''
 }
 
 function appendHistory(previous: DriveHistoryMap, snapshot: Snapshot) {
@@ -161,7 +164,14 @@ function App() {
     if (!snapshot?.drives.length) return
 
     const stillExists = snapshot.drives.some((drive) => drive.letter === selectedDrive)
-    if (!selectedDrive || !stillExists) {
+    const active = snapshot.drives.find((drive) => drive.letter === selectedDrive)
+    const readyCandidate = pickDefaultDrive(snapshot.drives)
+
+    if (
+      !selectedDrive ||
+      !stillExists ||
+      (active && active.analysisStatus !== 'ready' && readyCandidate && readyCandidate !== selectedDrive)
+    ) {
       setSelectedDrive(pickDefaultDrive(snapshot.drives))
     }
   }, [selectedDrive, snapshot])
