@@ -65,3 +65,20 @@ Aegis Disk Command
 - Key result: the project now has both `docs/change-highlights.md` and `docs/step-by-step-log.md`; the global logging skill now explains when and how to maintain both files; and the Chinese settings surface now uses cleaner localized labels for language choice and AI status.
 - Verification: re-ran `npm run lint`, `npm run build`, and a live `POST /api/settings` round-trip against a temporary local server instance; the settings endpoint saved and returned the expected `.aegis` paths and provider catalog state.
 - Final delivery state: the repository is ready for commit and push, with code, docs, screenshots, and local logging workflow rules all updated to the new standard.
+
+### 2026-04-02 Round 10
+- Request received: fix settings controls that snap back to follow-system/default mode, remove `undefined` and `NaN` markers, restore real scan data in the drive and scan views, and investigate Figma tool access.
+- Current action: traced the runtime path from the fast scanner through `server/index.mjs` into the React state model, then rebuilt the affected frontend surfaces to remove fragile state and encoding issues.
+- Key result: identified two root causes.
+  - The settings draft was being overwritten by each snapshot poll, so unsaved theme and narrative selections bounced back.
+  - The fast scanner emits PascalCase JSON fields such as `TopEntries`, `Stats`, and `RootsCompleted`, while the server was reading camelCase fields such as `topEntries`, `stats`, and `rootsCompleted`, producing empty hotspot lists and zeroed progress counters.
+- Implementation detail: rewrote `src/App.tsx`, `src/components/CockpitViews.tsx`, `src/i18n.ts`, and `src/lib/format.ts` to stabilize local settings state, harden empty-state rendering, and restore clean Chinese copy; added normalization helpers in `server/index.mjs` so both PascalCase and camelCase scan payloads are accepted for progress and final result mapping.
+- Verification:
+  - `node --check server/index.mjs`
+  - `npm run lint`
+  - `npm run build`
+  - live API verification on a temporary server instance showed `C:` with `27/27` root tasks, `910,232` files, `238,653` directories, and populated top entries including `Users`, `Windows`, and `Program Files`
+  - browser verification with headless Edge confirmed that theme and report-style selections no longer snap back after waiting past the polling interval, and the rendered page body contains neither `undefined` nor `NaN`
+  - browser verification also confirmed non-empty single-drive hotspot content for `C:`
+- Figma investigation: found a bundled Figma plugin under `F:\.codex\.tmp\plugins\plugins\figma` and confirmed the local Codex config had not enabled it yet; enabled `figma@openai-curated` in `F:\.codex\config.toml` for future sessions, but the current session cannot hot-add new connector tools after startup.
+- Final delivery state: the repo now contains the bug fixes and validation-backed UI/runtime hardening, and the local Codex environment is prepared to expose the Figma plugin on the next fresh session.

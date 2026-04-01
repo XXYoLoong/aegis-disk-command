@@ -1,10 +1,10 @@
 import {
+  startTransition,
   useDeferredValue,
   useEffect,
   useEffectEvent,
   useMemo,
   useState,
-  startTransition,
   type CSSProperties,
 } from 'react'
 import './index.css'
@@ -39,6 +39,7 @@ function pickDefaultDrive(drives: DriveSnapshot[]) {
 
 function appendHistory(previous: DriveHistoryMap, snapshot: Snapshot) {
   const next: DriveHistoryMap = { ...previous }
+
   for (const drive of snapshot.drives) {
     const points = [...(previous[drive.letter] ?? [])]
     points.push({
@@ -48,6 +49,7 @@ function appendHistory(previous: DriveHistoryMap, snapshot: Snapshot) {
     })
     next[drive.letter] = points.slice(-120)
   }
+
   return next
 }
 
@@ -68,8 +70,9 @@ function resolveTheme(mode: UiThemeMode) {
 }
 
 function driveCardStyle(usePercent: number): CSSProperties {
+  const safePercent = Number.isFinite(usePercent) ? usePercent : 0
   return {
-    '--fill-width': `${Math.max(6, Math.min(100, usePercent))}%`,
+    '--fill-width': `${Math.max(6, Math.min(100, safePercent))}%`,
   } as CSSProperties
 }
 
@@ -118,10 +121,26 @@ function createEmptySettings(): ClientSettings {
   }
 }
 
+function snapshotErrorMessage(language: LanguageMode) {
+  return language === 'en-US' ? 'Failed to fetch snapshot.' : '读取快照失败。'
+}
+
+function rescanErrorMessage(language: LanguageMode) {
+  return language === 'en-US' ? 'Failed to rescan.' : '重新扫描失败。'
+}
+
+function chatErrorMessage(language: LanguageMode) {
+  return language === 'en-US' ? 'AI chat failed.' : 'AI 对话失败。'
+}
+
+function saveSettingsErrorMessage(language: LanguageMode) {
+  return language === 'en-US' ? 'Failed to save settings.' : '保存设置失败。'
+}
+
 async function fetchSnapshotPayload(language: LanguageMode) {
   const response = await fetch('/api/snapshot')
   if (!response.ok) {
-    throw new Error(language === 'en-US' ? 'Failed to fetch snapshot.' : '读取快照失败。')
+    throw new Error(snapshotErrorMessage(language))
   }
   return (await response.json()) as Snapshot
 }
@@ -142,9 +161,16 @@ export default function App() {
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [settingsError, setSettingsError] = useState('')
   const [settingsMessage, setSettingsMessage] = useState('')
+  const [settingsDirty, setSettingsDirty] = useState(false)
   const deferredSnapshot = useDeferredValue(snapshot)
 
   const language = settingsDraft.ui.language
+
+  function markDirty() {
+    setSettingsDirty(true)
+    setSettingsMessage('')
+    setSettingsError('')
+  }
 
   const refreshSnapshot = useEffectEvent(async () => {
     try {
@@ -155,12 +181,17 @@ export default function App() {
         setHistory((previous) => appendHistory(previous, nextSnapshot))
       })
 
-      setSettingsDraft((previous) =>
-        Object.keys(previous.providers).length === 0 ? nextSnapshot.settings : { ...previous, ...nextSnapshot.settings, providers: { ...previous.providers, ...nextSnapshot.settings.providers } },
-      )
+      setSettingsDraft((previous) => {
+        if (settingsDirty && Object.keys(previous.providers).length > 0) {
+          return previous
+        }
+
+        return nextSnapshot.settings
+      })
+
       setFetchError('')
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to fetch snapshot.' : '读取快照失败。')
+      setFetchError(error instanceof Error ? error.message : snapshotErrorMessage(language))
     }
   })
 
@@ -174,7 +205,7 @@ export default function App() {
       void refreshSnapshot()
     }, intervalMs)
     return () => window.clearInterval(timer)
-  }, [snapshot])
+  }, [snapshot, settingsDirty])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: light)')
@@ -188,6 +219,8 @@ export default function App() {
       media.addEventListener('change', applyTheme)
       return () => media.removeEventListener('change', applyTheme)
     }
+
+    return undefined
   }, [settingsDraft.ui.themeMode])
 
   useEffect(() => {
@@ -219,12 +252,12 @@ export default function App() {
       })
       const data = await response.json()
       if (!response.ok || !data.ok) {
-        throw new Error(data?.message ?? (language === 'en-US' ? 'Failed to rescan.' : '重新扫描失败。'))
+        throw new Error(data?.message ?? rescanErrorMessage(language))
       }
       setViewMode('scan')
-      setSettingsMessage('')
+      setFetchError('')
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to rescan.' : '重新扫描失败。')
+      setFetchError(error instanceof Error ? error.message : rescanErrorMessage(language))
     } finally {
       setRescanTarget('')
     }
@@ -254,14 +287,14 @@ export default function App() {
       })
       const data = await response.json()
       if (!response.ok || !data.ok) {
-        throw new Error(data?.message ?? (language === 'en-US' ? 'AI chat failed.' : 'AI 对话失败。'))
+        throw new Error(data?.message ?? chatErrorMessage(language))
       }
       setChatByDrive((previous) => ({
         ...previous,
         [selectedDrive]: [...(previous[selectedDrive] ?? []), { role: 'assistant', content: String(data.reply ?? '') }],
       }))
     } catch (error) {
-      setChatError(error instanceof Error ? error.message : language === 'en-US' ? 'AI chat failed.' : 'AI 对话失败。')
+      setChatError(error instanceof Error ? error.message : chatErrorMessage(language))
     } finally {
       setChatBusy(false)
     }
@@ -271,6 +304,7 @@ export default function App() {
     setSettingsBusy(true)
     setSettingsError('')
     setSettingsMessage('')
+
     try {
       const response = await fetch('/api/settings', {
         method: 'POST',
@@ -293,23 +327,77 @@ export default function App() {
           ),
         }),
       })
+
       const data = await response.json()
       if (!response.ok || !data.ok) {
-        throw new Error(data?.message ?? (language === 'en-US' ? 'Failed to save settings.' : '保存设置失败。'))
+        throw new Error(data?.message ?? saveSettingsErrorMessage(language))
       }
+
       setSettingsDraft(data.settings)
       setProviderApiKeys({})
+      setSettingsDirty(false)
       setSettingsMessage(language === 'en-US' ? 'Settings saved.' : '设置已保存。')
+
       const nextSnapshot = await fetchSnapshotPayload(data.settings.ui.language)
       startTransition(() => {
         setSnapshot(nextSnapshot)
         setHistory((previous) => appendHistory(previous, nextSnapshot))
       })
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : language === 'en-US' ? 'Failed to save settings.' : '保存设置失败。')
+      setSettingsError(error instanceof Error ? error.message : saveSettingsErrorMessage(language))
     } finally {
       setSettingsBusy(false)
     }
+  }
+
+  function updateUiSetting<Key extends keyof ClientSettings['ui']>(
+    key: Key,
+    value: ClientSettings['ui'][Key],
+  ) {
+    setSettingsDraft((previous) => ({
+      ...previous,
+      ui: { ...previous.ui, [key]: value },
+    }))
+    markDirty()
+  }
+
+  function updateRuntimeSetting<Key extends keyof ClientSettings['runtime']>(
+    key: Key,
+    value: ClientSettings['runtime'][Key],
+  ) {
+    setSettingsDraft((previous) => ({
+      ...previous,
+      runtime: { ...previous.runtime, [key]: value },
+    }))
+    markDirty()
+  }
+
+  function updateProviderField(
+    providerId: string,
+    field: 'baseUrl' | 'model' | 'timeoutMs',
+    value: string,
+  ) {
+    setSettingsDraft((previous) => {
+      const current = previous.providers[providerId]
+      if (!current) return previous
+
+      return {
+        ...previous,
+        providers: {
+          ...previous.providers,
+          [providerId]: {
+            ...current,
+            [field]: field === 'timeoutMs' ? Number(value || 0) : value,
+          },
+        },
+      }
+    })
+    markDirty()
+  }
+
+  function updateProviderApiKey(providerId: string, value: string) {
+    setProviderApiKeys((previous) => ({ ...previous, [providerId]: value }))
+    markDirty()
   }
 
   if (!deferredSnapshot) {
@@ -329,12 +417,13 @@ export default function App() {
     deferredSnapshot.drives[0] ??
     null
   const chatMessages = activeDrive ? chatByDrive[activeDrive.letter] ?? [] : []
-  const providerDisplayName =
-    settingsDraft.providers[deferredSnapshot.system.selectedProvider]
-      ? language === 'en-US'
-        ? settingsDraft.providers[deferredSnapshot.system.selectedProvider].names.en
-        : settingsDraft.providers[deferredSnapshot.system.selectedProvider].names.zh
-      : deferredSnapshot.system.aiProvider || '--'
+
+  const selectedProviderConfig = settingsDraft.providers[deferredSnapshot.system.selectedProvider]
+  const providerDisplayName = selectedProviderConfig
+    ? language === 'en-US'
+      ? selectedProviderConfig.names.en
+      : selectedProviderConfig.names.zh
+    : deferredSnapshot.system.aiProvider || '--'
 
   return (
     <div className="app-shell">
@@ -469,39 +558,13 @@ export default function App() {
               saveBusy={settingsBusy}
               saveError={settingsError}
               saveMessage={settingsMessage}
-              onThemeChange={(value) =>
-                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, themeMode: value } }))
-              }
-              onLanguageChange={(value) =>
-                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, language: value } }))
-              }
-              onReportStyleChange={(value) =>
-                setSettingsDraft((previous) => ({ ...previous, ui: { ...previous.ui, reportStyle: value } }))
-              }
-              onProviderChange={(value) =>
-                setSettingsDraft((previous) => ({ ...previous, runtime: { ...previous.runtime, selectedProvider: value } }))
-              }
-              onProviderFieldChange={(providerId, field, value) =>
-                setSettingsDraft((previous) => ({
-                  ...previous,
-                  providers: {
-                    ...previous.providers,
-                    [providerId]: {
-                      ...previous.providers[providerId],
-                      [field]: field === 'timeoutMs' ? Number(value || 0) : value,
-                    },
-                  },
-                }))
-              }
-              onProviderApiKeyChange={(providerId, value) =>
-                setProviderApiKeys((previous) => ({ ...previous, [providerId]: value }))
-              }
-              onToggleRuntime={(field, value) =>
-                setSettingsDraft((previous) => ({
-                  ...previous,
-                  runtime: { ...previous.runtime, [field]: value },
-                }))
-              }
+              onThemeChange={(value) => updateUiSetting('themeMode', value)}
+              onLanguageChange={(value) => updateUiSetting('language', value)}
+              onReportStyleChange={(value) => updateUiSetting('reportStyle', value)}
+              onProviderChange={(value) => updateRuntimeSetting('selectedProvider', value)}
+              onProviderFieldChange={updateProviderField}
+              onProviderApiKeyChange={updateProviderApiKey}
+              onToggleRuntime={(field, value) => updateRuntimeSetting(field, value)}
               onSave={saveSettings}
             />
           ) : null}
@@ -512,7 +575,11 @@ export default function App() {
             <div className="side-card__head">
               <strong>{t(language, 'systemStatus')}</strong>
               <StatusBadge tone={fetchError ? 'critical' : deferredSnapshot.system.setupRequired ? 'warning' : 'stable'}>
-                {fetchError ? t(language, 'scanError') : deferredSnapshot.system.setupRequired ? t(language, 'scanQueued') : t(language, 'scanReady')}
+                {fetchError
+                  ? t(language, 'scanError')
+                  : deferredSnapshot.system.setupRequired
+                    ? t(language, 'scanQueued')
+                    : t(language, 'scanReady')}
               </StatusBadge>
             </div>
             <div className="side-metrics">

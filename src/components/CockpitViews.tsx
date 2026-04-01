@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { t, describeReportStyle } from '../i18n'
+import { describeReportStyle, t } from '../i18n'
 import {
   formatBytes,
   formatDurationMs,
@@ -69,6 +69,13 @@ export function OverviewView({
   rescanTarget,
   onRescan,
 }: ViewCommonProps) {
+  const providerConfig = snapshot.settings.providers[snapshot.system.selectedProvider]
+  const providerName = providerConfig
+    ? language === 'en-US'
+      ? providerConfig.names.en
+      : providerConfig.names.zh
+    : snapshot.system.aiProvider || '--'
+
   return (
     <div className="view-grid view-overview">
       <Panel
@@ -96,7 +103,7 @@ export function OverviewView({
                 <div className="metric-grid">
                   <MetricChip label={t(language, 'aiStatusLabel')} value={labelAiStatus(activeDrive.aiStatus, language)} />
                   <MetricChip label={t(language, 'scanElapsed')} value={formatDurationMs(activeDrive.scanDurationMs, language)} />
-                  <MetricChip label={t(language, 'provider')} value={snapshot.system.aiProvider || '--'} />
+                  <MetricChip label={t(language, 'provider')} value={providerName} />
                   <MetricChip label={t(language, 'freeSpace')} value={formatBytes(activeDrive.freeBytes, language)} />
                 </div>
               </div>
@@ -113,11 +120,15 @@ export function OverviewView({
         )}
       </Panel>
 
-      <Panel eyebrow={t(language, 'duplicates')} title={t(language, 'duplicates')} detail={snapshot.crossDrive.summary}>
+      <Panel eyebrow={t(language, 'duplicates')} title={t(language, 'duplicates')} detail={snapshot.crossDrive.summary || t(language, 'noSuggestions')}>
         <DuplicateList items={snapshot.crossDrive.duplicateTopLevelNames.slice(0, 8)} language={language} />
       </Panel>
 
-      <Panel eyebrow={t(language, 'standards')} title={t(language, 'standards')} detail={describeReportStyle(language, snapshot.settings.ui.reportStyle)}>
+      <Panel
+        eyebrow={t(language, 'standards')}
+        title={t(language, 'standards')}
+        detail={describeReportStyle(language, snapshot.settings.ui.reportStyle)}
+      >
         <StandardList items={snapshot.crossDrive.standardizationSuggestions.slice(0, 8)} language={language} />
       </Panel>
 
@@ -169,7 +180,7 @@ export function DriveView({ activeDrive, language, rescanTarget, onRescan }: Vie
 
 export function ScanView({ snapshot, activeDrive, language }: ViewCommonProps) {
   const liveDrive = snapshot.drives.find((drive) => drive.scanStatus === 'scanning') ?? activeDrive
-  const progress = liveDrive?.scanProgress
+  const progress = liveDrive?.scanProgress ?? null
 
   return (
     <div className="view-grid view-scan">
@@ -183,7 +194,7 @@ export function ScanView({ snapshot, activeDrive, language }: ViewCommonProps) {
             <ProgressStrip percent={progress.percent} language={language} />
             <div className="metric-grid">
               <MetricChip label={t(language, 'scanStage')} value={progress.phase || '--'} />
-              <MetricChip label={t(language, 'scanRoots')} value={`${progress.rootsCompleted}/${progress.rootsTotal || 0}`} />
+              <MetricChip label={t(language, 'scanRoots')} value={`${progress.rootsCompleted}/${progress.rootsTotal}`} />
               <MetricChip label={t(language, 'scanFiles')} value={formatNumber(progress.filesVisited, language)} />
               <MetricChip label={t(language, 'scanDirs')} value={formatNumber(progress.directoriesVisited, language)} />
               <MetricChip label={t(language, 'scanBytes')} value={formatBytes(progress.bytesSeen, language)} />
@@ -205,6 +216,13 @@ export function ScanView({ snapshot, activeDrive, language }: ViewCommonProps) {
 }
 
 export function AiView({ snapshot, activeDrive, language }: ViewCommonProps) {
+  const providerConfig = snapshot.settings.providers[snapshot.system.selectedProvider]
+  const providerName = providerConfig
+    ? language === 'en-US'
+      ? providerConfig.names.en
+      : providerConfig.names.zh
+    : snapshot.system.aiProvider || t(language, 'provider')
+
   return (
     <div className="view-grid view-ai">
       <Panel eyebrow={t(language, 'aiHeadline')} title={t(language, 'aiHeadline')} detail={t(language, 'aiDetail')}>
@@ -221,11 +239,11 @@ export function AiView({ snapshot, activeDrive, language }: ViewCommonProps) {
         )}
       </Panel>
 
-      <Panel eyebrow={t(language, 'provider')} title={snapshot.system.aiProvider || t(language, 'provider')} detail={snapshot.system.analysisEngine}>
+      <Panel eyebrow={t(language, 'provider')} title={providerName} detail={snapshot.system.analysisEngine}>
         <div className="metric-grid">
-          <MetricChip label={t(language, 'provider')} value={snapshot.system.aiProvider || '--'} />
+          <MetricChip label={t(language, 'provider')} value={providerName} />
           <MetricChip label={t(language, 'providerModel')} value={snapshot.system.aiModel || '--'} />
-          <MetricChip label={t(language, 'aiStatusLabel')} value={snapshot.system.aiStatus} />
+          <MetricChip label={t(language, 'aiStatusLabel')} value={labelAiStatus(snapshot.system.aiStatus, language)} />
           <MetricChip label={t(language, 'lastUpdated')} value={formatUpdatedAt(snapshot.system.aiLastAnalyzedAt, language)} />
         </div>
       </Panel>
@@ -280,7 +298,24 @@ export function ChatView({
 }
 
 export function SettingsView(props: SettingsViewProps) {
-  const selected = props.settings.providers[props.settings.runtime.selectedProvider]
+  const providerList = Object.values(props.settings.providers)
+  const selected =
+    props.settings.providers[props.settings.runtime.selectedProvider] ??
+    providerList[0]
+
+  if (!selected) {
+    return (
+      <div className="view-grid view-settings">
+        <Panel eyebrow={t(props.language, 'settingsHeadline')} title={t(props.language, 'settingsHeadline')} detail={t(props.language, 'settingsDetail')}>
+          <EmptyState
+            language={props.language}
+            title={t(props.language, 'settingsHeadline')}
+            detail={t(props.language, 'setupRequired')}
+          />
+        </Panel>
+      </div>
+    )
+  }
 
   return (
     <div className="view-grid view-settings">
@@ -326,7 +361,7 @@ export function SettingsView(props: SettingsViewProps) {
               value={props.settings.runtime.selectedProvider}
               onChange={(event) => props.onProviderChange(event.target.value)}
             >
-              {Object.values(props.settings.providers).map((provider) => (
+              {providerList.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {props.language === 'en-US' ? provider.names.en : provider.names.zh}
                 </option>
@@ -502,6 +537,7 @@ function SegmentedPicker(props: {
           key={option.id}
           className={`segment ${props.value === option.id ? 'is-active' : ''}`}
           onClick={() => props.onChange(option.id)}
+          type="button"
         >
           {option.label}
         </button>
@@ -512,7 +548,7 @@ function SegmentedPicker(props: {
 
 function ToggleRow({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
   return (
-    <button className={`toggle ${checked ? 'is-active' : ''}`} onClick={() => onChange(!checked)}>
+    <button className={`toggle ${checked ? 'is-active' : ''}`} onClick={() => onChange(!checked)} type="button">
       <span />
     </button>
   )
@@ -528,15 +564,16 @@ function PathCard({ label, value }: { label: string; value: string }) {
 }
 
 function UsageDial({ drive, language }: { drive: DriveSnapshot; language: LanguageMode }) {
+  const safePercent = Number.isFinite(drive.usePercent) ? drive.usePercent : 0
   const style = {
-    '--usage-angle': `${Math.max(8, Math.min(100, drive.usePercent)) * 3.6}deg`,
+    '--usage-angle': `${Math.max(8, Math.min(100, safePercent)) * 3.6}deg`,
   } as CSSProperties
 
   return (
     <div className="usage-dial" style={style}>
       <div className="usage-dial__inner">
         <span>{drive.letter}:</span>
-        <strong>{formatPercent(drive.usePercent, language)}</strong>
+        <strong>{formatPercent(safePercent, language)}</strong>
         <small>{formatBytes(drive.freeBytes, language)}</small>
       </div>
     </div>
@@ -556,14 +593,16 @@ function TrendChart({
 
   const width = 420
   const height = 160
-  const values = points.map((point) => point.usedPercent)
+  const values = points
+    .map((point) => (Number.isFinite(point.usedPercent) ? point.usedPercent : 0))
   const max = Math.max(...values, 1)
   const min = Math.min(...values, 0)
   const range = Math.max(max - min, 1)
   const path = points
     .map((point, index) => {
+      const usedPercent = Number.isFinite(point.usedPercent) ? point.usedPercent : 0
       const x = (index / Math.max(points.length - 1, 1)) * width
-      const y = height - ((point.usedPercent - min) / range) * (height - 24) - 12
+      const y = height - ((usedPercent - min) / range) * (height - 24) - 12
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
     })
     .join(' ')
@@ -577,10 +616,11 @@ function TrendChart({
 }
 
 function ProgressStrip({ percent, language }: { percent: number; language: LanguageMode }) {
+  const safePercent = Number.isFinite(percent) ? percent : 0
   return (
     <div className="progress-strip">
-      <div className="progress-strip__bar" style={{ width: `${Math.max(4, Math.min(100, percent))}%` }} />
-      <span>{formatPercent(percent, language)}</span>
+      <div className="progress-strip__bar" style={{ width: `${Math.max(4, Math.min(100, safePercent))}%` }} />
+      <span>{formatPercent(safePercent, language)}</span>
     </div>
   )
 }
@@ -804,6 +844,7 @@ function aiTone(status: string) {
   if (status === 'ready') return 'stable'
   if (status === 'analyzing') return 'info'
   if (status === 'error') return 'critical'
+  if (status === 'disabled') return 'warning'
   return 'warning'
 }
 
@@ -817,8 +858,8 @@ function labelScanStatus(status: string, language: LanguageMode) {
 function labelAiStatus(status: string, language: LanguageMode) {
   if (status === 'disabled') return t(language, 'aiDisabled')
   if (status === 'ready') return t(language, 'aiReady')
-  if (status === 'analyzing') return t(language, 'aiRunning')
-  if (status === 'error') return t(language, 'aiError')
+  if (status === 'analyzing' || status === 'running') return t(language, 'aiRunning')
+  if (status === 'error' || status === 'degraded' || status === 'degraded-cache') return t(language, 'aiError')
   if (status === 'queued') return t(language, 'aiQueued')
   return t(language, 'aiIdle')
 }

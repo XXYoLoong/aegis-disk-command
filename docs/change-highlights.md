@@ -23,3 +23,10 @@
   - `docs/change-highlights.md` for high-level milestones
   - `docs/step-by-step-log.md` for detailed decisions and execution
 - Updated the local `process-log-sync` skill so future project work can keep summary and detailed logs synchronized.
+
+### 2026-04-02 Round 4
+- Fixed settings toggles so theme and narrative mode no longer snap back during background polling.
+- Fixed the scan-result mapping bug between the fast scanner's PascalCase payload and the server's runtime state.
+- Removed `undefined` and `NaN` leakage through stricter formatting and empty-state guards.
+- Verified live scan data in the browser and confirmed non-empty top hotspots, focus areas, and scan counters.
+- Enabled the local Figma plugin in `F:\.codex\config.toml` for future Codex sessions.

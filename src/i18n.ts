@@ -33,7 +33,7 @@ const zhCN: Dictionary = {
   providerModel: '模型名称',
   providerBaseUrl: '接口地址',
   providerApiKey: '接口密钥',
-  providerApiKeyHint: '留空则保持现状；输入新值后将写入本地私有配置。',
+  providerApiKeyHint: '留空则保持现状；输入新值后会写入本地私有配置。',
   providerTimeout: '超时时间',
   offlineCache: '允许离线回退',
   autoSaveCache: '自动保存联网分析缓存',
@@ -54,7 +54,7 @@ const zhCN: Dictionary = {
   scanRunning: '扫描中',
   scanReady: '已完成',
   scanError: '异常',
-  aiIdle: '待机',
+  aiIdle: '待命',
   aiQueued: '排队中',
   aiRunning: '分析中',
   aiReady: '已完成',
@@ -62,7 +62,7 @@ const zhCN: Dictionary = {
   aiDisabled: '未启用',
   overviewHeadline: '全局治理总览',
   overviewDetail: '优先观察总量压力、跨盘重复面和治理收益最高的机会项。',
-  driveHeadline: '单盘结构剖析',
+  driveHeadline: '单盘结构分析',
   driveDetail: '查看单盘热点目录、显著文件和下层聚焦区域。',
   scanHeadline: '扫描进程可视化',
   scanDetail: '直接观察当前根任务、路径推进、文件数与目录数。',
@@ -213,7 +213,7 @@ export function describeReportStyle(language: LanguageMode, style: ReportStyle) 
   if (style === 'gov-report') {
     return language === 'en-US'
       ? 'Each drive is narrated as a governed region with pressure, achievements, and next steps.'
-      : '将每个磁盘视作重点治理地区，突出总体态势、成效与下一步安排。'
+      : '将每个磁盘视作重点治理区域，突出总体态势、成效与下一步安排。'
   }
 
   return language === 'en-US'

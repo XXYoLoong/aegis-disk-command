@@ -104,6 +104,66 @@ function toArray(value) {
   return Array.isArray(value) ? value : [value]
 }
 
+function readField(source, ...keys) {
+  for (const key of keys) {
+    if (source && source[key] !== undefined && source[key] !== null) {
+      return source[key]
+    }
+  }
+  return undefined
+}
+
+function readString(source, ...keys) {
+  const value = readField(source, ...keys)
+  return typeof value === 'string' ? value : ''
+}
+
+function readEntry(source) {
+  return {
+    name: readString(source, 'name', 'Name'),
+    path: readString(source, 'path', 'Path'),
+    type: readString(source, 'type', 'Type') || 'file',
+    extension: readField(source, 'extension', 'Extension') ?? null,
+    sizeBytes: bytes(readField(source, 'sizeBytes', 'SizeBytes')),
+  }
+}
+
+function readFocusDirectory(source) {
+  return {
+    name: readString(source, 'name', 'Name'),
+    path: readString(source, 'path', 'Path'),
+    sizeBytes: bytes(readField(source, 'sizeBytes', 'SizeBytes')),
+    children: toArray(readField(source, 'children', 'Children')).map(readEntry),
+  }
+}
+
+function readStats(source) {
+  return {
+    rootsCompleted: Number(readField(source, 'rootsCompleted', 'RootsCompleted') ?? 0),
+    rootsTotal: Number(readField(source, 'rootsTotal', 'RootsTotal') ?? 0),
+    filesVisited: bytes(readField(source, 'filesVisited', 'FilesVisited')),
+    directoriesVisited: bytes(readField(source, 'directoriesVisited', 'DirectoriesVisited')),
+    bytesSeen: bytes(readField(source, 'bytesSeen', 'BytesSeen')),
+    elapsedMs: bytes(readField(source, 'elapsedMs', 'ElapsedMs')),
+  }
+}
+
+function readProgress(source) {
+  const stats = readStats(source)
+  return {
+    phase: readString(source, 'phase', 'Phase') || 'idle',
+    percent: Number(readField(source, 'percent', 'Percent') ?? 0),
+    rootsCompleted: stats.rootsCompleted,
+    rootsTotal: stats.rootsTotal,
+    filesVisited: stats.filesVisited,
+    directoriesVisited: stats.directoriesVisited,
+    bytesSeen: stats.bytesSeen,
+    currentRoot: readField(source, 'currentRoot', 'CurrentRoot') ?? null,
+    currentPath: readField(source, 'currentPath', 'CurrentPath') ?? null,
+    elapsedMs: stats.elapsedMs,
+  }
+}
+
 function classifyDriveHealth(usePercent) {
   if (usePercent >= 92) return 'critical'
   if (usePercent >= 82) return 'warning'
@@ -442,17 +502,18 @@ function runScanner(letter) {
     stdoutReader.on('line', (line) => {
       const progress = parseJsonLine(line, '__PROGRESS__')
       if (progress) {
+        const normalizedProgress = readProgress(progress)
         analysis.scanProgress = {
-          phase: progress.phase,
-          percent: progress.percent,
-          rootsCompleted: progress.rootsCompleted,
-          rootsTotal: progress.rootsTotal,
-          filesVisited: progress.filesVisited,
-          directoriesVisited: progress.directoriesVisited,
-          bytesSeen: progress.bytesSeen,
-          currentRoot: progress.currentRoot,
-          currentPath: progress.currentPath,
-          elapsedMs: progress.elapsedMs,
+          phase: normalizedProgress.phase,
+          percent: normalizedProgress.percent,
+          rootsCompleted: normalizedProgress.rootsCompleted,
+          rootsTotal: normalizedProgress.rootsTotal,
+          filesVisited: normalizedProgress.filesVisited,
+          directoriesVisited: normalizedProgress.directoriesVisited,
+          bytesSeen: normalizedProgress.bytesSeen,
+          currentRoot: normalizedProgress.currentRoot,
+          currentPath: normalizedProgress.currentPath,
+          elapsedMs: normalizedProgress.elapsedMs,
           updatedAt: new Date().toISOString(),
         }
         syncDriveState(letter)
@@ -515,34 +576,10 @@ function applyCachedDriveResult(letter) {
 }
 
 async function finalizeScan(letter, raw) {
-  const topEntries = toArray(raw.topEntries).map((entry) => ({
-    name: entry.name,
-    path: entry.path,
-    type: entry.type,
-    extension: entry.extension ?? null,
-    sizeBytes: bytes(entry.sizeBytes),
-  }))
-
-  const focusDirectories = toArray(raw.focusDirectories).map((group) => ({
-    name: group.name,
-    path: group.path,
-    sizeBytes: bytes(group.sizeBytes),
-    children: toArray(group.children).map((entry) => ({
-      name: entry.name,
-      path: entry.path,
-      type: entry.type,
-      extension: entry.extension ?? null,
-      sizeBytes: bytes(entry.sizeBytes),
-    })),
-  }))
-
-  const notableFiles = toArray(raw.notableFiles).map((entry) => ({
-    name: entry.name,
-    path: entry.path,
-    type: entry.type,
-    extension: entry.extension ?? null,
-    sizeBytes: bytes(entry.sizeBytes),
-  }))
+  const topEntries = toArray(readField(raw, 'topEntries', 'TopEntries')).map(readEntry)
+  const focusDirectories = toArray(readField(raw, 'focusDirectories', 'FocusDirectories')).map(readFocusDirectory)
+  const notableFiles = toArray(readField(raw, 'notableFiles', 'NotableFiles')).map(readEntry)
+  const stats = readStats(readField(raw, 'stats', 'Stats'))
 
   const language = currentLanguage()
   const style = currentReportStyle()
@@ -564,19 +601,19 @@ async function finalizeScan(letter, raw) {
   const analysis = ensureAnalysis(letter)
   analysis.scanStatus = 'ready'
   analysis.lastScannedAt = new Date().toISOString()
-  analysis.scanDurationMs = bytes(raw.stats?.elapsedMs)
+  analysis.scanDurationMs = stats.elapsedMs
   analysis.scanError = null
   analysis.scanProgress = {
     phase: 'complete',
     percent: 100,
-    rootsCompleted: Number(raw.stats?.rootsCompleted ?? 0),
-    rootsTotal: Number(raw.stats?.rootsTotal ?? 0),
-    filesVisited: bytes(raw.stats?.filesVisited),
-    directoriesVisited: bytes(raw.stats?.directoriesVisited),
-    bytesSeen: bytes(raw.stats?.bytesSeen),
+    rootsCompleted: stats.rootsCompleted,
+    rootsTotal: stats.rootsTotal,
+    filesVisited: stats.filesVisited,
+    directoriesVisited: stats.directoriesVisited,
+    bytesSeen: stats.bytesSeen,
     currentRoot: null,
     currentPath: null,
-    elapsedMs: bytes(raw.stats?.elapsedMs),
+    elapsedMs: stats.elapsedMs,
     updatedAt: new Date().toISOString(),
   }
   analysis.topEntries = topEntries
