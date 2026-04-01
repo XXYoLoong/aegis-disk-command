@@ -20,6 +20,13 @@ export function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+export function formatDurationMs(value: number | null) {
+  if (!value) return '待完成'
+  if (value < 1000) return `${value} ms`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  return `${(value / 60_000).toFixed(1)} 分钟`
+}
+
 export function formatUpdatedAt(value: string | null) {
   if (!value) return '等待首次分析'
 
@@ -36,5 +43,5 @@ export function formatUpdatedAt(value: string | null) {
 
 export function shortPath(value: string) {
   if (value.length <= 60) return value
-  return `${value.slice(0, 24)}…${value.slice(-32)}`
+  return `${value.slice(0, 24)}...${value.slice(-32)}`
 }

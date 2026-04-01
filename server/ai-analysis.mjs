@@ -55,9 +55,9 @@ function buildDrivePrompt(input) {
   return {
     system: [
       '你是一个磁盘容量分析助手。',
-      '你只能输出严格 JSON，不要输出 Markdown，不要输出解释文字。',
-      '请使用中文。',
-      '请优先给出可执行、可落地、低幻觉的磁盘整理建议。',
+      '只允许输出严格 JSON，不要输出 Markdown，也不要输出解释性前后缀。',
+      '请使用中文，且只基于输入中真实存在的数据做判断。',
+      '优先给出可执行、低幻觉、适合本地磁盘整理的建议。',
     ].join(' '),
     user: JSON.stringify(
       {
@@ -83,10 +83,10 @@ function buildDrivePrompt(input) {
           ],
         },
         rules: [
-          '只使用输入里已经出现的信息，不要编造不存在的文件或目录。',
+          '不能编造不存在的文件、目录、应用或扫描结果。',
           'path 必须从 candidatePaths 中选择；如果没有合适对象，请使用盘符根路径。',
           '机会项最多返回 6 条，指导建议最多返回 3 条。',
-          'estimatedBytes 必须是数字，尽量与输入的大小保持一致或保守估计。',
+          'estimatedBytes 必须是数字，并尽量贴近输入中的真实大小。',
         ],
         drive: input.drive,
         candidatePaths: [...candidatePaths],
@@ -105,8 +105,8 @@ function buildCrossDrivePrompt(input) {
   return {
     system: [
       '你是一个磁盘治理与目录标准化助手。',
-      '你只能输出严格 JSON，不要输出 Markdown，不要输出解释文字。',
-      '请使用中文，输出偏向工程治理和长期维护。',
+      '只允许输出严格 JSON，不要输出 Markdown，也不要输出解释性前后缀。',
+      '请用中文输出偏工程治理和长期维护视角的建议。',
     ].join(' '),
     user: JSON.stringify(
       {
@@ -122,7 +122,7 @@ function buildCrossDrivePrompt(input) {
         },
         rules: [
           '建议最多返回 4 条。',
-          '不要输出泛泛而谈的建议，要结合输入里的真实目录与盘符分布。',
+          '不要输出泛泛而谈的建议，要结合输入中的真实目录和盘符分布。',
           '不要杜撰不存在的软件、目录或盘符。',
         ],
         drives: input.drives,
@@ -133,6 +133,39 @@ function buildCrossDrivePrompt(input) {
       null,
       2,
     ),
+  }
+}
+
+function buildChatPrompt(input) {
+  return {
+    system: [
+      '你是 Aegis Disk Command 的磁盘分析对话助手。',
+      '你正在回答用户关于某个磁盘当前扫描结果的问题。',
+      '只基于输入中的真实扫描结果和历史对话回答，不要编造不存在的数据。',
+      '请使用中文，回答要具体、实用、可操作。',
+    ].join(' '),
+    messages: [
+      {
+        role: 'system',
+        content: JSON.stringify(
+          {
+            task: '基于盘符分析结果回答用户问题。',
+            drive: input.drive,
+            summary: input.summary,
+            opportunities: input.opportunities,
+            topEntries: input.topEntries,
+            focusDirectories: input.focusDirectories,
+            notableFiles: input.notableFiles,
+            aiGuidance: input.aiGuidance,
+            crossDriveSummary: input.crossDriveSummary,
+          },
+          null,
+          2,
+        ),
+      },
+      ...input.history,
+      { role: 'user', content: input.message },
+    ],
   }
 }
 
@@ -159,6 +192,30 @@ async function postJson(url, body, timeoutMs, headers) {
   }
 }
 
+function extractJson(content) {
+  if (!content || typeof content !== 'string') {
+    throw new Error('DeepSeek 返回了空内容。')
+  }
+
+  const trimmed = content.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return JSON.parse(trimmed)
+  }
+
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]+?)\s*```/i)
+  if (fenceMatch?.[1]) {
+    return JSON.parse(fenceMatch[1])
+  }
+
+  const objectStart = trimmed.indexOf('{')
+  const objectEnd = trimmed.lastIndexOf('}')
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    return JSON.parse(trimmed.slice(objectStart, objectEnd + 1))
+  }
+
+  throw new Error('DeepSeek 未返回可解析的 JSON。')
+}
+
 async function requestDeepSeekJson(prompt) {
   const config = getAiRuntimeConfig()
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
@@ -172,7 +229,7 @@ async function requestDeepSeekJson(prompt) {
     {
       model: config.model,
       temperature: 0.2,
-      max_tokens: 1400,
+      max_tokens: 1600,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: prompt.system },
@@ -187,11 +244,34 @@ async function requestDeepSeekJson(prompt) {
   )
 
   const content = response?.choices?.[0]?.message?.content
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('DeepSeek 返回了空内容。')
+  return extractJson(content)
+}
+
+async function requestDeepSeekChat(prompt) {
+  const config = getAiRuntimeConfig()
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
+
+  if (!config.enabled || !apiKey) {
+    return null
   }
 
-  return JSON.parse(content)
+  const response = await postJson(
+    new URL('/chat/completions', config.baseUrl).toString(),
+    {
+      model: config.model,
+      temperature: 0.25,
+      max_tokens: 1200,
+      messages: prompt.messages,
+    },
+    config.timeoutMs,
+    {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+  )
+
+  const content = response?.choices?.[0]?.message?.content
+  return trimText(content, '暂时无法生成回答，请稍后再试。')
 }
 
 function normalizeDriveOpportunity(letter, item, knownPaths) {
@@ -256,4 +336,26 @@ export async function analyzeCrossDriveWithAi(input) {
         detail: trimText(item?.detail, '建议结合真实目录结构进一步整理。'),
       })),
   }
+}
+
+export async function chatWithDriveContext(input) {
+  const config = getAiRuntimeConfig()
+  if (!config.enabled) {
+    return '当前未启用 DeepSeek，对话能力暂不可用。'
+  }
+
+  const prompt = buildChatPrompt({
+    drive: input.drive,
+    summary: input.summary,
+    opportunities: input.opportunities,
+    topEntries: input.topEntries,
+    focusDirectories: input.focusDirectories,
+    notableFiles: input.notableFiles,
+    aiGuidance: input.aiGuidance,
+    crossDriveSummary: input.crossDriveSummary,
+    history: Array.isArray(input.history) ? input.history.slice(-8) : [],
+    message: input.message,
+  })
+
+  return requestDeepSeekChat(prompt)
 }

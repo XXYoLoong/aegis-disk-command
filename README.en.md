@@ -1,139 +1,167 @@
 # Aegis Disk Command
 
-[简体中文](./README.md)
+[中文 README](./README.md)
 
 [![Stars](https://img.shields.io/github/stars/XXYoLoong/aegis-disk-command?style=flat-square)](https://github.com/XXYoLoong/aegis-disk-command/stargazers)
 [![Forks](https://img.shields.io/github/forks/XXYoLoong/aegis-disk-command?style=flat-square)](https://github.com/XXYoLoong/aegis-disk-command/network/members)
 [![Issues](https://img.shields.io/github/issues/XXYoLoong/aegis-disk-command?style=flat-square)](https://github.com/XXYoLoong/aegis-disk-command/issues)
-[![Last Commit](https://img.shields.io/github/last-commit/XXYoLoong/aegis-disk-command?style=flat-square)](https://github.com/XXYoLoong/aegis-disk-command/commits/main)
-[![Platform](https://img.shields.io/badge/Platform-Windows_10%2B-0078D6?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![AI](https://img.shields.io/badge/AI-DeepSeek-4D6BFE?style=flat-square)](https://api-docs.deepseek.com/)
-[![Mode](https://img.shields.io/badge/Mode-Local--First-0B1220?style=flat-square)](#)
+[![Windows](https://img.shields.io/badge/Windows-Only-0b6cff?style=flat-square)](https://www.microsoft.com/windows)
+[![React](https://img.shields.io/badge/React-19-0ea5e9?style=flat-square)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-7c3aed?style=flat-square)](https://vite.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-Express-1f7a43?style=flat-square)](https://nodejs.org/)
+[![PowerShell](https://img.shields.io/badge/PowerShell-Scanner-2f6fed?style=flat-square)](https://learn.microsoft.com/powershell/)
+[![DeepSeek](https://img.shields.io/badge/AI-DeepSeek-2563eb?style=flat-square)](https://api-docs.deepseek.com/)
 
-A local-first disk command cockpit for Windows. It combines live capacity telemetry, directory scanning, heuristic fallback logic, and optional DeepSeek-powered AI analysis so you can inspect every mounted drive like a control surface instead of a flat file explorer.
+A local, real-time disk command cockpit for Windows. Instead of generating a one-off static report, it behaves like a continuously running operations surface:
 
-## Features
+- monitors all drives in real time
+- streams scan progress with live counters and current paths
+- surfaces hot directories, large files, cache opportunities, and cross-drive duplication
+- adds per-drive AI interpretation plus cross-drive governance suggestions
+- supports post-analysis AI chat so you can keep asking follow-up questions
+- splits the experience into focused work views instead of forcing everything into one giant dashboard
 
-- Monitor all mounted Windows filesystem drives in real time
-- Track total, used, free, and pressure levels across the fleet
-- Scan top-level directories, focus directories, and visible large files in the background
-- Detect recycle bins, cache zones, download depots, sync-heavy folders, toolchain sprawl, virtual disk payloads, and game libraries
-- Use DeepSeek to generate smarter per-drive opportunities and cross-drive standardization suggestions when `DEEPSEEK_API_KEY` is available
-- Automatically fall back to local heuristic analysis if AI is unavailable, times out, or returns invalid output
-- Present everything in a dark command-center UI designed for high-density situational awareness
+![Aegis Disk Command Overview](./docs/screenshots/overview.png)
 
-## How The Analysis Works
+## Why It Is Faster Now
 
-The current analysis layer is not just a few hardcoded frontend messages. It has two separate layers:
+The old bottleneck was not just “PowerShell is slow”. The bigger problem was repeated subtree I/O:
 
-1. Collection layer  
-   `server/scan-drive.ps1` reads top-level directories, focus directories, and notable files for each drive. `systeminformation` provides live storage, CPU, and memory telemetry.
+- one recursive pass for top-level sizing
+- another recursive pass for focused directories
+- more repeated reads for extra detail
+- AI analysis blocking the next drive from scanning
 
-2. Analysis layer  
-   `server/index.mjs` always produces a local heuristic result first. If `DEEPSEEK_API_KEY` is present, it then calls DeepSeek's official `POST /chat/completions` API and asks for strict JSON output. The AI result is merged with the local fallback result.
+The new architecture speeds this up in two ways:
 
-That means:
+1. Scan pipeline optimization
 
-- The app still works with no AI at all
-- The analysis is no longer limited to fixed keyword rules when AI is enabled
-- If the AI call fails, the dashboard automatically falls back to local rules instead of breaking
+- `server/FastScanner.cs` uses Win32 `FindFirstFileExW` with `FIND_FIRST_EX_LARGE_FETCH`
+- the scanner walks each subtree only once
+- it aggregates all needed outputs during that same traversal:
+  - top-level sizes
+  - focused child entries
+  - notable large files
+  - live progress counters
 
-## AI Mode
+2. Analysis pipeline optimization
 
-AI mode is enabled automatically when `DEEPSEEK_API_KEY` is present in the environment. Optional environment variables:
+- `server/index.mjs` separates the scan queue from the AI queue
+- as soon as one drive finishes scanning, the next drive can start immediately
+- AI analysis runs asynchronously in the background and no longer blocks scan throughput
 
-```bash
-DEEPSEEK_API_KEY=your_key
-DEEPSEEK_MODEL=deepseek-chat
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_TIMEOUT_MS=12000
-AI_ANALYSIS_ENABLED=true
-```
+On the current machine, the default full scan of `C:` was measured at about `37.4 seconds`, down from the previously observed `~7 minutes`.
 
-Notes:
+## UI Structure
 
-- `DEEPSEEK_MODEL` defaults to `deepseek-chat`
-- `AI_ANALYSIS_ENABLED=false` forces the app back into heuristic-only mode
-- AI mode sends trimmed path metadata, directory names, sizes, and fallback opportunity summaries to DeepSeek in order to generate structured recommendations
+The UI is now organized as a multi-surface workbench:
 
-## Stack
-
-- React 19
-- TypeScript
-- Vite
-- Express 5
-- `systeminformation`
-- Windows PowerShell
-- DeepSeek Chat Completions API (optional)
+- `Overview`
+  - system-level capacity pressure, cross-drive opportunities, duplicates, normalization guidance
+- `Drive Detail`
+  - top-level hot spots, focused directories, notable files
+- `Scan Flow`
+  - live progress, current root, current path, roots completed, files visited, directories visited
+- `AI Analysis`
+  - per-drive summary, guided actions, cross-drive AI summary
+- `AI Chat`
+  - follow-up questions after scan completion
 
 ## Project Structure
 
 ```text
 disk-command-cockpit/
-  docs/
-    step-by-step-log.md
-  server/
-    ai-analysis.mjs
-    index.mjs
-    scan-drive.ps1
-  src/
-    lib/
-    App.tsx
-    index.css
-    main.tsx
-    types.ts
-  dist/
-  package.json
+├─ server/
+│  ├─ FastScanner.cs
+│  ├─ scan-drive.ps1
+│  ├─ ai-analysis.mjs
+│  └─ index.mjs
+├─ src/
+│  ├─ App.tsx
+│  ├─ components/
+│  │  └─ CockpitViews.tsx
+│  ├─ lib/format.ts
+│  ├─ types.ts
+│  └─ index.css
+└─ docs/
+   └─ step-by-step-log.md
 ```
 
-## Run Locally
+## Getting Started
+
+### 1. Install dependencies
 
 ```bash
 npm install
+```
+
+### 2. Run in development
+
+```bash
 npm run dev
 ```
 
-This starts:
+This starts both:
 
-- the local disk analysis service at `http://127.0.0.1:5525`
-- the Vite dev server at `http://127.0.0.1:5173`
+- frontend via Vite
+- backend via `node server/index.mjs`
 
-For a production-style local run:
+### 3. Production build
 
 ```bash
 npm run build
 npm run start
 ```
 
-Then open:
+## Environment Variables
 
-```text
-http://127.0.0.1:5525
+### Optional: enable DeepSeek
+
+```powershell
+$env:DEEPSEEK_API_KEY="your_key"
 ```
 
-## Runtime Model
+Optional overrides:
 
-- Capacity telemetry refresh: every 5 seconds
-- Deep scans: queued and processed sequentially
-- After each drive scan:
-  - local heuristic analysis is generated first
-  - DeepSeek is called for structured JSON analysis when enabled
-  - opportunities are merged and cross-drive standardization suggestions are refreshed
-- If AI is unavailable, the local heuristic output remains active
+```powershell
+$env:DEEPSEEK_BASE_URL="https://api.deepseek.com"
+$env:DEEPSEEK_MODEL="deepseek-chat"
+$env:DEEPSEEK_TIMEOUT_MS="12000"
+```
+
+Without `DEEPSEEK_API_KEY`, the application still works with local heuristic fallback analysis.
+
+## API
+
+- `GET /api/snapshot`
+- `POST /api/rescan`
+- `POST /api/chat`
+- `GET /api/health`
+
+## Analysis Flow
+
+The system builds a deterministic scan result first, then layers AI on top:
+
+1. drive capacity and health
+2. top-level hot directories and files
+3. child expansion for focused heavy directories
+4. notable large files and cache opportunities
+5. cross-drive duplicates and normalization suggestions
+6. DeepSeek structured analysis for each drive and for the whole system
+7. follow-up AI chat after a drive scan is complete
+
+## Verified
+
+- `npm run lint`
+- `npm run build`
+- `node --check server/index.mjs`
+- `node --check server/ai-analysis.mjs`
+- measured full `C:` scan at about `37.4 seconds`
+- verified `GET /api/health` with active scan and AI runtime status
 
 ## Notes
 
-- The project is local-first and does not upload full file contents
-- The UI reads drive metadata and directory structure only; it does not delete or move files
-- When AI is enabled, trimmed path names, folder names, and storage summaries are sent to DeepSeek
-- npm cache for this workspace is pinned to `F:` via `.npmrc`, not `C:`
-
-## Roadmap
-
-- Incremental scanning and persistent telemetry history
-- Markdown / JSON report export
-- Richer Treemap / Sunburst visualizations
-- Per-drive progress feedback
-- Configurable AI prompts and privacy trimming policies
+- the current default behavior is read-first analysis; it does not auto-delete or auto-migrate files
+- scan latency still depends on drive size, directory fragmentation, permissions, and background file activity
+- AI chat is available after the selected drive completes scanning
+- on first launch, `server/scan-drive.ps1` compiles the scanner into the project-local `.runtime/` folder rather than writing to `C:`

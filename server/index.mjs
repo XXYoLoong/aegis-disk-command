@@ -1,13 +1,14 @@
 import express from 'express'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import si from 'systeminformation'
 import {
   analyzeCrossDriveWithAi,
   analyzeDriveWithAi,
+  chatWithDriveContext,
   getAiRuntimeConfig,
 } from './ai-analysis.mjs'
 
@@ -16,15 +17,13 @@ const __dirname = path.dirname(__filename)
 const projectRoot = path.resolve(__dirname, '..')
 const distRoot = path.join(projectRoot, 'dist')
 const scanScript = path.join(__dirname, 'scan-drive.ps1')
-const execFileAsync = promisify(execFile)
 const app = express()
 
 const PORT = Number(process.env.PORT ?? 5525)
-const LIVE_REFRESH_MS = 5000
+const LIVE_REFRESH_MS = 1500
 const ANALYSIS_STALE_MS = 1000 * 60 * 8
 const MAX_HISTORY_POINTS = 120
-const DRIVE_AI_LIMIT = 10
-const CROSS_DRIVE_AI_REFRESH_MS = 1000 * 30
+const CROSS_DRIVE_AI_DEBOUNCE_MS = 2000
 const aiConfig = getAiRuntimeConfig()
 
 const state = {
@@ -40,8 +39,12 @@ const state = {
     freeBytes: 0,
     driveCount: 0,
     queueDepth: 0,
+    scanQueueDepth: 0,
+    aiQueueDepth: 0,
     activeScan: null,
+    activeAi: null,
     historySamples: 0,
+    uptimeMinutes: 0,
     analysisEngine: aiConfig.enabled ? 'DeepSeek + 规则兜底' : '规则启发式',
     aiEnabled: aiConfig.enabled,
     aiProvider: aiConfig.provider,
@@ -53,6 +56,7 @@ const state = {
   drives: [],
   analyses: new Map(),
   scanQueue: [],
+  aiQueue: [],
   crossDriveAi: {
     summary: '',
     standardizationSuggestions: [],
@@ -66,17 +70,19 @@ const state = {
   },
 }
 
-let crossDriveRefreshPromise = null
+let crossDriveTimer = null
+let activeScanChild = null
+let activeAiTask = null
 
-app.use(express.json())
+app.use(express.json({ limit: '1mb' }))
+
+function bytes(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
 
 function toArray(value) {
   if (!value) return []
   return Array.isArray(value) ? value : [value]
-}
-
-function bytes(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 function classifyDriveHealth(usePercent) {
@@ -291,6 +297,77 @@ function fallbackStandardizationSuggestions() {
   ]
 }
 
+function buildFallbackDriveGuidance(drive, opportunities) {
+  const items = []
+
+  if (drive.usePercent >= 92) {
+    items.push({
+      title: '可用余量已经接近极限',
+      detail: '当前盘的安全缓冲很薄，优先从回收站、下载仓、安装包和重复安装面拿回空间。',
+      tone: 'critical',
+    })
+  } else if (drive.usePercent >= 82) {
+    items.push({
+      title: '已经进入容量预警区间',
+      detail: '在下一次大型安装、同步爆发或素材导入之前，最好先完成一轮针对性的清理。',
+      tone: 'warning',
+    })
+  } else {
+    items.push({
+      title: '当前盘面余量相对稳定',
+      detail: '这个盘还有一定缓冲，适合进一步明确职责边界，减少后续目录混杂。',
+      tone: 'stable',
+    })
+  }
+
+  if (opportunities.length > 0) {
+    items.push({
+      title: '已识别出高收益整理线索',
+      detail: '当前扫描结果里已经出现缓存区、下载仓、媒体目录或工具链重复面，适合优先处理。',
+      tone: 'warning',
+    })
+  }
+
+  items.push({
+    title: '建议保持盘面职责单一',
+    detail:
+      '尽量让一个盘只承担一类核心任务，例如系统、开发、游戏、媒体或归档，这样扫描、迁移和清理都会更稳定。',
+    tone: 'info',
+  })
+
+  return items
+}
+
+function buildFallbackDriveSummary(drive, topEntries, opportunities) {
+  const heaviest = topEntries.slice(0, 3).map((entry) => entry.name).join('、')
+  const lead =
+    drive.usePercent >= 90
+      ? '当前盘容量压力很高。'
+      : drive.usePercent >= 80
+        ? '当前盘已经进入预警区。'
+        : '当前盘容量状态相对平稳。'
+
+  const focus = heaviest ? `最重的顶层区域主要是 ${heaviest}。` : '目前还没有完成足够的目录样本。'
+  const action =
+    opportunities.length > 0
+      ? `已发现 ${opportunities.length} 条值得优先检查的整理线索。`
+      : '暂未发现明显的高收益机会位。'
+
+  return `${lead}${focus}${action}`
+}
+
+function buildFallbackCrossSummary(duplicates, topOpportunities) {
+  if (duplicates.length === 0 && topOpportunities.length === 0) {
+    return '目前还没有形成明显的跨盘重复面或高优先级整理信号。'
+  }
+
+  if (duplicates.length > 0) {
+    return `已发现 ${duplicates.length} 组跨盘重名顶层目录，建议优先收拢职责重复的目录。`
+  }
+
+  return `全局已识别出 ${topOpportunities.length} 条高收益整理机会，建议按容量收益从高到低处理。`
+}
+
 function mergeOpportunities(primary, fallback) {
   const merged = []
   const seen = new Set()
@@ -303,9 +380,148 @@ function mergeOpportunities(primary, fallback) {
     merged.push(item)
   }
 
-  return merged
-    .sort((a, b) => b.estimatedBytes - a.estimatedBytes)
-    .slice(0, DRIVE_AI_LIMIT)
+  return merged.sort((a, b) => b.estimatedBytes - a.estimatedBytes).slice(0, 12)
+}
+
+function createDefaultScanProgress() {
+  return {
+    phase: 'idle',
+    percent: 0,
+    rootsCompleted: 0,
+    rootsTotal: 0,
+    filesVisited: 0,
+    directoriesVisited: 0,
+    bytesSeen: 0,
+    currentRoot: null,
+    currentPath: null,
+    elapsedMs: 0,
+    updatedAt: null,
+  }
+}
+
+function createDefaultAnalysis(letter) {
+  return {
+    letter,
+    scanStatus: 'queued',
+    aiStatus: aiConfig.enabled ? 'idle' : 'idle',
+    lastScannedAt: null,
+    lastAiAnalyzedAt: null,
+    scanDurationMs: null,
+    aiDurationMs: null,
+    scanError: null,
+    aiError: null,
+    scanProgress: createDefaultScanProgress(),
+    topEntries: [],
+    focusDirectories: [],
+    notableFiles: [],
+    opportunities: [],
+    fallbackOpportunities: [],
+    analysisSource: 'heuristic',
+    analysisSummary: '',
+    aiGuidance: [],
+  }
+}
+
+function ensureAnalysis(letter) {
+  if (!state.analyses.has(letter)) {
+    state.analyses.set(letter, createDefaultAnalysis(letter))
+  }
+  return state.analyses.get(letter)
+}
+
+function applyAnalysisToDrive(baseDrive, analysis) {
+  return {
+    ...baseDrive,
+    scanStatus: analysis.scanStatus,
+    aiStatus: analysis.aiStatus,
+    lastScannedAt: analysis.lastScannedAt,
+    lastAiAnalyzedAt: analysis.lastAiAnalyzedAt,
+    scanDurationMs: analysis.scanDurationMs,
+    aiDurationMs: analysis.aiDurationMs,
+    scanError: analysis.scanError,
+    aiError: analysis.aiError,
+    scanProgress: analysis.scanProgress,
+    topEntries: analysis.topEntries,
+    focusDirectories: analysis.focusDirectories,
+    notableFiles: analysis.notableFiles,
+    opportunities: analysis.opportunities,
+    analysisSource: analysis.analysisSource,
+    analysisSummary: analysis.analysisSummary,
+    aiGuidance: analysis.aiGuidance,
+  }
+}
+
+function syncDriveState(letter) {
+  const analysis = ensureAnalysis(letter)
+  const index = state.drives.findIndex((drive) => drive.letter === letter)
+  if (index === -1) return
+  state.drives[index] = applyAnalysisToDrive(state.drives[index], analysis)
+  state.generatedAt = new Date().toISOString()
+}
+
+function syncSystemState(partial = {}) {
+  state.system = {
+    ...state.system,
+    queueDepth: state.scanQueue.length,
+    scanQueueDepth: state.scanQueue.length,
+    aiQueueDepth: state.aiQueue.length,
+    activeScan: activeScanChild?.letter ?? null,
+    activeAi: activeAiTask?.label ?? null,
+    ...partial,
+  }
+}
+
+function enqueueScan(letter, position = 'tail') {
+  const normalized = String(letter ?? '').trim().toUpperCase()
+  if (!/^[A-Z]$/.test(normalized)) return
+  if (state.scanQueue.includes(normalized)) return
+  if (activeScanChild?.letter === normalized) return
+
+  if (position === 'head') {
+    state.scanQueue.unshift(normalized)
+  } else {
+    state.scanQueue.push(normalized)
+  }
+
+  const analysis = ensureAnalysis(normalized)
+  analysis.scanStatus = 'queued'
+  analysis.scanError = null
+  syncDriveState(normalized)
+  syncSystemState()
+}
+
+function enqueueAiTask(task) {
+  if (!aiConfig.enabled) return
+
+  const key = task.kind === 'drive' ? `drive:${task.letter}` : 'cross'
+  const existsInQueue = state.aiQueue.some((item) => item.key === key)
+  const isActive = activeAiTask?.key === key
+  if (existsInQueue || isActive) return
+
+  const queuedTask = { ...task, key }
+  state.aiQueue.push(queuedTask)
+
+  if (task.kind === 'drive') {
+    const analysis = ensureAnalysis(task.letter)
+    if (analysis.aiStatus === 'idle' || analysis.aiStatus === 'error') {
+      analysis.aiStatus = 'queued'
+      analysis.aiError = null
+      syncDriveState(task.letter)
+    }
+  }
+
+  syncSystemState()
+}
+
+function scheduleCrossDriveAi() {
+  if (!aiConfig.enabled) return
+  if (crossDriveTimer) {
+    clearTimeout(crossDriveTimer)
+  }
+
+  crossDriveTimer = setTimeout(() => {
+    enqueueAiTask({ kind: 'cross', label: '跨盘分析' })
+  }, CROSS_DRIVE_AI_DEBOUNCE_MS)
 }
 
 function deriveCrossDrive(drives) {
@@ -348,19 +564,9 @@ function deriveCrossDrive(drives) {
       state.crossDriveAi.standardizationSuggestions.length > 0
         ? state.crossDriveAi.standardizationSuggestions
         : fallbackSuggestions,
-    summary: state.crossDriveAi.summary || '',
+    summary:
+      state.crossDriveAi.summary || buildFallbackCrossSummary(duplicateTopLevelNames, topOpportunities),
     fallbackSuggestions,
-  }
-}
-
-function updateAiState(partial) {
-  state.system = {
-    ...state.system,
-    analysisEngine: aiConfig.enabled ? 'DeepSeek + 规则兜底' : '规则启发式',
-    aiEnabled: aiConfig.enabled,
-    aiProvider: aiConfig.provider,
-    aiModel: aiConfig.enabled ? aiConfig.model : null,
-    ...partial,
   }
 }
 
@@ -376,33 +582,25 @@ async function refreshLiveSystem() {
     .map((item) => {
       const mount = item.mount || item.fs
       const letter = mount[0].toUpperCase()
-      const analysis = state.analyses.get(letter)
+      const analysis = ensureAnalysis(letter)
       const totalBytes = bytes(item.size)
       const usedBytes = bytes(item.used)
       const freeBytes = Math.max(totalBytes - usedBytes, 0)
       const usePercent = totalBytes === 0 ? 0 : (usedBytes / totalBytes) * 100
 
-      return {
-        letter,
-        mount,
-        fsType: item.type || item.fsType || '未知',
-        totalBytes,
-        usedBytes,
-        freeBytes,
-        usePercent,
-        health: classifyDriveHealth(usePercent),
-        analysisStatus: analysis?.analysisStatus ?? 'queued',
-        lastScannedAt: analysis?.lastScannedAt ?? null,
-        scanDurationMs: analysis?.scanDurationMs ?? null,
-        scanError: analysis?.scanError ?? null,
-        topEntries: analysis?.topEntries ?? [],
-        focusDirectories: analysis?.focusDirectories ?? [],
-        notableFiles: analysis?.notableFiles ?? [],
-        opportunities: analysis?.opportunities ?? [],
-        analysisSource: analysis?.analysisSource ?? 'heuristic',
-        analysisSummary: analysis?.analysisSummary ?? '',
-        aiGuidance: analysis?.aiGuidance ?? [],
-      }
+      return applyAnalysisToDrive(
+        {
+          letter,
+          mount,
+          fsType: item.type || item.fsType || '未知',
+          totalBytes,
+          usedBytes,
+          freeBytes,
+          usePercent,
+          health: classifyDriveHealth(usePercent),
+        },
+        analysis,
+      )
     })
     .sort((a, b) => a.letter.localeCompare(b.letter))
 
@@ -411,12 +609,8 @@ async function refreshLiveSystem() {
       !drive.lastScannedAt ||
       Date.now() - new Date(drive.lastScannedAt).getTime() > ANALYSIS_STALE_MS
 
-    if (
-      stale &&
-      !state.scanQueue.includes(drive.letter) &&
-      state.system.activeScan !== drive.letter
-    ) {
-      state.scanQueue.push(drive.letter)
+    if (stale && drive.scanStatus !== 'scanning') {
+      enqueueScan(drive.letter)
     }
   }
 
@@ -427,8 +621,7 @@ async function refreshLiveSystem() {
 
   state.generatedAt = new Date().toISOString()
   state.drives = drives
-  state.system = {
-    ...state.system,
+  syncSystemState({
     hostName: os.hostname(),
     platform: `${os.platform()} ${os.release()}`,
     cpuLoadPercent: currentLoad.currentLoad,
@@ -437,11 +630,14 @@ async function refreshLiveSystem() {
     usedBytes,
     freeBytes,
     driveCount: drives.length,
-    queueDepth: state.scanQueue.length,
-    activeScan: state.system.activeScan,
     historySamples: Math.min(MAX_HISTORY_POINTS, state.system.historySamples + 1),
     uptimeMinutes: Math.floor((Date.now() - state.bootedAt) / 60000),
-  }
+    analysisEngine: aiConfig.enabled ? 'DeepSeek + 规则兜底' : '规则启发式',
+    aiEnabled: aiConfig.enabled,
+    aiProvider: aiConfig.provider,
+    aiModel: aiConfig.enabled ? aiConfig.model : null,
+  })
+
   state.crossDrive = {
     duplicateTopLevelNames: crossDrive.duplicateTopLevelNames,
     standardizationSuggestions: crossDrive.standardizationSuggestions,
@@ -450,89 +646,108 @@ async function refreshLiveSystem() {
   }
 }
 
-async function refreshCrossDriveInsights() {
-  if (!aiConfig.enabled) return
-
-  const now = Date.now()
-  const lastUpdatedAt = state.crossDriveAi.updatedAt
-    ? new Date(state.crossDriveAi.updatedAt).getTime()
-    : 0
-
-  if (crossDriveRefreshPromise) return crossDriveRefreshPromise
-  if (lastUpdatedAt && now - lastUpdatedAt < CROSS_DRIVE_AI_REFRESH_MS) return
-
-  const fallback = deriveCrossDrive(state.drives)
-  const readyDrives = state.drives
-    .filter((drive) => drive.analysisStatus === 'ready')
-    .map((drive) => ({
-      letter: drive.letter,
-      fsType: drive.fsType,
-      usePercent: drive.usePercent,
-      freeBytes: drive.freeBytes,
-      topEntries: drive.topEntries.slice(0, 6),
-      opportunities: drive.opportunities.slice(0, 4),
-      analysisSummary: drive.analysisSummary ?? '',
-    }))
-
-  if (readyDrives.length === 0) return
-
-  crossDriveRefreshPromise = (async () => {
-    try {
-      const aiResult = await analyzeCrossDriveWithAi({
-        drives: readyDrives,
-        duplicateTopLevelNames: fallback.duplicateTopLevelNames,
-        topOpportunities: fallback.topOpportunities,
-        fallbackSuggestions: fallback.fallbackSuggestions,
-      })
-
-      if (aiResult?.standardizationSuggestions?.length) {
-        state.crossDriveAi = {
-          summary: aiResult.summary ?? '',
-          standardizationSuggestions: aiResult.standardizationSuggestions,
-          updatedAt: new Date().toISOString(),
-        }
-
-        updateAiState({
-          aiStatus: '就绪',
-          aiLastError: null,
-          aiLastAnalyzedAt: state.crossDriveAi.updatedAt,
-        })
-
-        await refreshLiveSystem()
-      }
-    } catch (error) {
-      updateAiState({
-        aiStatus: '降级',
-        aiLastError:
-          error instanceof Error ? error.message.slice(0, 240) : '跨盘 AI 分析失败。',
-      })
-    } finally {
-      crossDriveRefreshPromise = null
-    }
-  })()
-
-  return crossDriveRefreshPromise
+function parseJsonLine(rawLine, prefix) {
+  const cleaned = rawLine.replace(/^\uFEFF/, '')
+  if (!cleaned.startsWith(prefix)) return null
+  return JSON.parse(cleaned.slice(prefix.length))
 }
 
-async function scanDrive(letter) {
-  const startedAt = Date.now()
-  const args = [
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-File',
-    scanScript,
-    '-DriveLetter',
-    letter,
-  ]
+function runScanner(letter) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scanScript,
+      '-DriveLetter',
+      letter,
+    ]
 
-  const { stdout } = await execFileAsync('powershell', args, {
-    windowsHide: true,
-    maxBuffer: 1024 * 1024 * 12,
-    timeout: 1000 * 60 * 10,
+    const child = spawn('powershell', args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    activeScanChild = { letter, child }
+    syncSystemState()
+
+    const analysis = ensureAnalysis(letter)
+    analysis.scanStatus = 'scanning'
+    analysis.scanError = null
+    analysis.scanDurationMs = null
+    analysis.scanProgress = {
+      ...createDefaultScanProgress(),
+      phase: 'preparing',
+      updatedAt: new Date().toISOString(),
+    }
+    syncDriveState(letter)
+
+    let resultPayload = null
+    let stderr = ''
+
+    const handleProgress = (payload) => {
+      analysis.scanProgress = {
+        phase: payload.phase,
+        percent: payload.percent,
+        rootsCompleted: payload.rootsCompleted,
+        rootsTotal: payload.rootsTotal,
+        filesVisited: payload.filesVisited,
+        directoriesVisited: payload.directoriesVisited,
+        bytesSeen: payload.bytesSeen,
+        currentRoot: payload.currentRoot,
+        currentPath: payload.currentPath,
+        elapsedMs: payload.elapsedMs,
+        updatedAt: new Date().toISOString(),
+      }
+      syncDriveState(letter)
+    }
+
+    const stdoutReader = createInterface({ input: child.stdout })
+    stdoutReader.on('line', (line) => {
+      const progress = parseJsonLine(line, '__PROGRESS__')
+      if (progress) {
+        handleProgress(progress)
+        return
+      }
+
+      const result = parseJsonLine(line, '__RESULT__')
+      if (result) {
+        resultPayload = result
+      }
+    })
+
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+
+    child.on('error', (error) => {
+      activeScanChild = null
+      syncSystemState()
+      reject(error)
+    })
+
+    child.on('close', (code) => {
+      activeScanChild = null
+      syncSystemState()
+
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `扫描进程异常退出，代码 ${code}`))
+        return
+      }
+
+      if (!resultPayload) {
+        reject(new Error('扫描进程没有返回结果。'))
+        return
+      }
+
+      resolve(resultPayload)
+    })
   })
+}
 
-  const raw = JSON.parse(stdout.trim())
+async function finalizeScan(letter, raw) {
   const topEntries = toArray(raw.topEntries).map((entry) => ({
     name: entry.name,
     path: entry.path,
@@ -565,103 +780,201 @@ async function scanDrive(letter) {
   const fallbackOpportunities = buildFallbackOpportunities(letter, [
     ...topEntries,
     ...focusDirectories.flatMap((group) => group.children ?? []),
+    ...notableFiles,
   ]).sort((a, b) => b.estimatedBytes - a.estimatedBytes)
 
-  const driveState =
-    state.drives.find((drive) => drive.letter === letter) ?? {
-      letter,
-      fsType: '未知',
-      totalBytes: 0,
-      usedBytes: 0,
-      freeBytes: 0,
-      usePercent: 0,
-    }
-
-  let aiResult = null
-  if (aiConfig.enabled) {
-    try {
-      aiResult = await analyzeDriveWithAi({
-        drive: {
-          letter,
-          fsType: driveState.fsType,
-          totalBytes: driveState.totalBytes,
-          usedBytes: driveState.usedBytes,
-          freeBytes: driveState.freeBytes,
-          usePercent: driveState.usePercent,
-        },
-        topEntries: topEntries.slice(0, 8),
-        focusDirectories: focusDirectories
-          .slice(0, 4)
-          .map((group) => ({ ...group, children: group.children.slice(0, 5) })),
-        notableFiles: notableFiles.slice(0, 6),
-        fallbackOpportunities: fallbackOpportunities.slice(0, 6),
-      })
-
-      updateAiState({
-        aiStatus: '就绪',
-        aiLastError: null,
-        aiLastAnalyzedAt: new Date().toISOString(),
-      })
-    } catch (error) {
-      updateAiState({
-        aiStatus: '降级',
-        aiLastError: error instanceof Error ? error.message.slice(0, 240) : '单盘 AI 分析失败。',
-      })
-    }
+  const drive = state.drives.find((item) => item.letter === letter) ?? {
+    letter,
+    usePercent: 0,
+    freeBytes: 0,
+    totalBytes: 0,
+    usedBytes: 0,
+    fsType: '未知',
   }
 
-  const opportunities = mergeOpportunities(aiResult?.opportunities ?? [], fallbackOpportunities)
+  const analysis = ensureAnalysis(letter)
+  analysis.scanStatus = 'ready'
+  analysis.lastScannedAt = new Date().toISOString()
+  analysis.scanDurationMs = bytes(raw.stats?.elapsedMs)
+  analysis.scanError = null
+  analysis.scanProgress = {
+    phase: 'complete',
+    percent: 100,
+    rootsCompleted: Number(raw.stats?.rootsCompleted ?? 0),
+    rootsTotal: Number(raw.stats?.rootsTotal ?? 0),
+    filesVisited: bytes(raw.stats?.filesVisited),
+    directoriesVisited: bytes(raw.stats?.directoriesVisited),
+    bytesSeen: bytes(raw.stats?.bytesSeen),
+    currentRoot: null,
+    currentPath: null,
+    elapsedMs: bytes(raw.stats?.elapsedMs),
+    updatedAt: new Date().toISOString(),
+  }
+  analysis.topEntries = topEntries
+  analysis.focusDirectories = focusDirectories
+  analysis.notableFiles = notableFiles
+  analysis.fallbackOpportunities = fallbackOpportunities
+  analysis.opportunities = fallbackOpportunities
+  analysis.analysisSource = 'heuristic'
+  analysis.analysisSummary = buildFallbackDriveSummary(drive, topEntries, fallbackOpportunities)
+  analysis.aiGuidance = buildFallbackDriveGuidance(drive, fallbackOpportunities)
+  analysis.aiStatus = aiConfig.enabled ? 'queued' : 'idle'
+  analysis.aiError = null
+  analysis.aiDurationMs = null
 
-  state.analyses.set(letter, {
-    analysisStatus: 'ready',
-    lastScannedAt: new Date().toISOString(),
-    scanDurationMs: Date.now() - startedAt,
-    scanError: null,
-    topEntries,
-    focusDirectories,
-    notableFiles,
-    opportunities,
-    analysisSource: aiResult ? 'ai+heuristic' : 'heuristic',
-    analysisSummary: aiResult?.summary ?? '',
-    aiGuidance: aiResult?.guidance ?? [],
-  })
+  syncDriveState(letter)
+  enqueueAiTask({ kind: 'drive', letter, label: `${letter}: AI 解读` })
+  scheduleCrossDriveAi()
 }
 
-async function processQueue() {
-  if (state.system.activeScan || state.scanQueue.length === 0) return
+async function processScanQueue() {
+  if (activeScanChild || state.scanQueue.length === 0) return
 
   const letter = state.scanQueue.shift()
   if (!letter) return
 
-  state.system.activeScan = letter
-  const previous = state.analyses.get(letter) ?? {}
-  state.analyses.set(letter, {
-    ...previous,
-    analysisStatus: 'scanning',
-    scanError: null,
-  })
+  syncSystemState()
 
   try {
-    await scanDrive(letter)
+    const raw = await runScanner(letter)
+    await finalizeScan(letter, raw)
     await refreshLiveSystem()
-    refreshCrossDriveInsights().catch(() => {})
   } catch (error) {
-    state.analyses.set(letter, {
-      ...previous,
-      analysisStatus: 'error',
-      lastScannedAt: previous.lastScannedAt ?? null,
-      scanDurationMs: null,
-      scanError: error instanceof Error ? error.message : '磁盘扫描发生未知错误。',
-      topEntries: previous.topEntries ?? [],
-      focusDirectories: previous.focusDirectories ?? [],
-      notableFiles: previous.notableFiles ?? [],
-      opportunities: previous.opportunities ?? [],
-      analysisSource: previous.analysisSource ?? 'heuristic',
-      analysisSummary: previous.analysisSummary ?? '',
-      aiGuidance: previous.aiGuidance ?? [],
+    const analysis = ensureAnalysis(letter)
+    analysis.scanStatus = 'error'
+    analysis.scanError = error instanceof Error ? error.message : '扫描发生未知错误。'
+    analysis.scanProgress = {
+      ...analysis.scanProgress,
+      phase: 'error',
+      updatedAt: new Date().toISOString(),
+    }
+    syncDriveState(letter)
+  } finally {
+    syncSystemState()
+  }
+}
+
+async function runDriveAiTask(letter) {
+  const analysis = ensureAnalysis(letter)
+  if (analysis.scanStatus !== 'ready') return
+
+  const drive = state.drives.find((item) => item.letter === letter)
+  if (!drive) return
+
+  analysis.aiStatus = 'analyzing'
+  analysis.aiError = null
+  syncDriveState(letter)
+
+  const startedAt = Date.now()
+  const aiResult = await analyzeDriveWithAi({
+    drive: {
+      letter,
+      fsType: drive.fsType,
+      totalBytes: drive.totalBytes,
+      usedBytes: drive.usedBytes,
+      freeBytes: drive.freeBytes,
+      usePercent: drive.usePercent,
+    },
+    topEntries: analysis.topEntries.slice(0, 8),
+    focusDirectories: analysis.focusDirectories.slice(0, 4).map((group) => ({
+      ...group,
+      children: group.children.slice(0, 6),
+    })),
+    notableFiles: analysis.notableFiles.slice(0, 8),
+    fallbackOpportunities: analysis.fallbackOpportunities.slice(0, 6),
+  })
+
+  if (!aiResult) return
+
+  analysis.opportunities = mergeOpportunities(
+    aiResult.opportunities ?? [],
+    analysis.fallbackOpportunities ?? [],
+  )
+  analysis.analysisSummary = aiResult.summary || analysis.analysisSummary
+  analysis.aiGuidance =
+    aiResult.guidance?.length > 0 ? aiResult.guidance : analysis.aiGuidance
+  analysis.analysisSource = 'ai+heuristic'
+  analysis.aiStatus = 'ready'
+  analysis.aiDurationMs = Date.now() - startedAt
+  analysis.lastAiAnalyzedAt = new Date().toISOString()
+  analysis.aiError = null
+
+  syncDriveState(letter)
+  scheduleCrossDriveAi()
+}
+
+async function runCrossDriveAiTask() {
+  const readyDrives = state.drives
+    .filter((drive) => drive.scanStatus === 'ready')
+    .map((drive) => ({
+      letter: drive.letter,
+      fsType: drive.fsType,
+      usePercent: drive.usePercent,
+      freeBytes: drive.freeBytes,
+      topEntries: drive.topEntries.slice(0, 6),
+      opportunities: drive.opportunities.slice(0, 4),
+      analysisSummary: drive.analysisSummary ?? '',
+    }))
+
+  if (readyDrives.length === 0) return
+
+  const fallback = deriveCrossDrive(state.drives)
+  const result = await analyzeCrossDriveWithAi({
+    drives: readyDrives,
+    duplicateTopLevelNames: fallback.duplicateTopLevelNames,
+    topOpportunities: fallback.topOpportunities,
+    fallbackSuggestions: fallback.fallbackSuggestions,
+  })
+
+  if (!result) return
+
+  state.crossDriveAi = {
+    summary: result.summary ?? '',
+    standardizationSuggestions: result.standardizationSuggestions ?? [],
+    updatedAt: new Date().toISOString(),
+  }
+  state.system.aiLastAnalyzedAt = state.crossDriveAi.updatedAt
+  await refreshLiveSystem()
+}
+
+async function processAiQueue() {
+  if (activeAiTask || state.aiQueue.length === 0 || !aiConfig.enabled) return
+
+  const task = state.aiQueue.shift()
+  if (!task) return
+
+  activeAiTask = task
+  syncSystemState({ aiStatus: '分析中', aiLastError: null })
+
+  try {
+    if (task.kind === 'drive') {
+      await runDriveAiTask(task.letter)
+    } else if (task.kind === 'cross') {
+      await runCrossDriveAiTask()
+    }
+
+    syncSystemState({
+      aiStatus: state.aiQueue.length > 0 ? '排队中' : '就绪',
+      aiLastError: null,
+      aiLastAnalyzedAt: new Date().toISOString(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'AI 分析失败。'
+
+    if (task.kind === 'drive') {
+      const analysis = ensureAnalysis(task.letter)
+      analysis.aiStatus = 'error'
+      analysis.aiError = message
+      syncDriveState(task.letter)
+    }
+
+    syncSystemState({
+      aiStatus: '降级',
+      aiLastError: message,
     })
   } finally {
-    state.system.activeScan = null
+    activeAiTask = null
+    syncSystemState()
   }
 }
 
@@ -685,12 +998,82 @@ app.post('/api/rescan', async (req, res) => {
     return
   }
 
-  if (!state.scanQueue.includes(requested) && state.system.activeScan !== requested) {
-    state.scanQueue.unshift(requested)
-  }
+  const analysis = ensureAnalysis(requested)
+  analysis.scanStatus = 'queued'
+  analysis.aiStatus = aiConfig.enabled ? 'idle' : 'idle'
+  analysis.scanError = null
+  analysis.aiError = null
+  analysis.scanProgress = createDefaultScanProgress()
+  analysis.analysisSummary = ''
+  analysis.aiGuidance = []
 
+  enqueueScan(requested, 'head')
   await refreshLiveSystem()
   res.json({ ok: true, queued: formatQueueEntry(requested) })
+})
+
+app.post('/api/chat', async (req, res) => {
+  const driveLetter = String(req.body?.drive ?? '').trim().toUpperCase()
+  const message = String(req.body?.message ?? '').trim()
+  const history = Array.isArray(req.body?.history)
+    ? req.body.history
+        .map((item) => ({
+          role: item?.role === 'assistant' ? 'assistant' : 'user',
+          content: String(item?.content ?? '').trim(),
+        }))
+        .filter((item) => item.content)
+        .slice(-8)
+    : []
+
+  if (!driveLetter || !/^[A-Z]$/.test(driveLetter)) {
+    res.status(400).json({ ok: false, message: '需要提供有效的盘符字母。' })
+    return
+  }
+
+  if (!message) {
+    res.status(400).json({ ok: false, message: '请输入问题内容。' })
+    return
+  }
+
+  if (!aiConfig.enabled) {
+    res.status(400).json({ ok: false, message: '当前未启用 DeepSeek，对话能力不可用。' })
+    return
+  }
+
+  const drive = state.drives.find((item) => item.letter === driveLetter)
+  const analysis = ensureAnalysis(driveLetter)
+  if (!drive || analysis.scanStatus !== 'ready') {
+    res.status(400).json({ ok: false, message: '该盘尚未完成扫描，暂时不能进行对话。' })
+    return
+  }
+
+  try {
+    const reply = await chatWithDriveContext({
+      drive: {
+        letter: driveLetter,
+        fsType: drive.fsType,
+        usePercent: drive.usePercent,
+        freeBytes: drive.freeBytes,
+        totalBytes: drive.totalBytes,
+      },
+      summary: analysis.analysisSummary,
+      opportunities: analysis.opportunities.slice(0, 8),
+      topEntries: analysis.topEntries.slice(0, 8),
+      focusDirectories: analysis.focusDirectories.slice(0, 4),
+      notableFiles: analysis.notableFiles.slice(0, 8),
+      aiGuidance: analysis.aiGuidance.slice(0, 4),
+      crossDriveSummary: state.crossDrive.summary,
+      history,
+      message,
+    })
+
+    res.json({ ok: true, reply })
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : 'AI 对话失败。',
+    })
+  }
 })
 
 app.get('/api/health', (_req, res) => {
@@ -698,7 +1081,9 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     generatedAt: state.generatedAt,
     activeScan: state.system.activeScan,
-    queueDepth: state.scanQueue.length,
+    activeAi: state.system.activeAi,
+    scanQueueDepth: state.system.scanQueueDepth,
+    aiQueueDepth: state.system.aiQueueDepth,
     analysisEngine: state.system.analysisEngine,
     aiEnabled: state.system.aiEnabled,
     aiStatus: state.system.aiStatus,
@@ -716,16 +1101,20 @@ app.get(/^(?!\/api\/).*/, (_req, res, next) => {
 
 async function boot() {
   await refreshLiveSystem()
-  processQueue().catch(() => {})
-  refreshCrossDriveInsights().catch(() => {})
+  processScanQueue().catch(() => {})
+  processAiQueue().catch(() => {})
 
   setInterval(() => {
     refreshLiveSystem().catch(() => {})
   }, LIVE_REFRESH_MS)
 
   setInterval(() => {
-    processQueue().catch(() => {})
-  }, 1500)
+    processScanQueue().catch(() => {})
+  }, 250)
+
+  setInterval(() => {
+    processAiQueue().catch(() => {})
+  }, 250)
 
   app.listen(PORT, () => {
     console.log(`Aegis Disk Command 已启动: http://127.0.0.1:${PORT}`)

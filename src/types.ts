@@ -1,5 +1,6 @@
 export type HealthLevel = 'critical' | 'warning' | 'stable'
 export type ScanState = 'queued' | 'scanning' | 'ready' | 'error'
+export type AiState = 'idle' | 'queued' | 'analyzing' | 'ready' | 'error'
 
 export interface Entry {
   name: string
@@ -27,6 +28,26 @@ export interface Opportunity {
   estimatedBytes: number
 }
 
+export interface GuidanceItem {
+  title: string
+  detail: string
+  tone: 'critical' | 'warning' | 'stable' | 'info'
+}
+
+export interface ScanProgress {
+  phase: string
+  percent: number
+  rootsCompleted: number
+  rootsTotal: number
+  filesVisited: number
+  directoriesVisited: number
+  bytesSeen: number
+  currentRoot: string | null
+  currentPath: string | null
+  elapsedMs: number
+  updatedAt: string | null
+}
+
 export interface DriveSnapshot {
   letter: string
   mount: string
@@ -36,14 +57,22 @@ export interface DriveSnapshot {
   freeBytes: number
   usePercent: number
   health: HealthLevel
-  analysisStatus: ScanState
+  scanStatus: ScanState
+  aiStatus: AiState
   lastScannedAt: string | null
+  lastAiAnalyzedAt: string | null
   scanDurationMs: number | null
+  aiDurationMs: number | null
   scanError: string | null
+  aiError: string | null
+  scanProgress: ScanProgress
   topEntries: Entry[]
   focusDirectories: FocusDirectory[]
   notableFiles: Entry[]
   opportunities: Opportunity[]
+  analysisSource: string
+  analysisSummary: string
+  aiGuidance: GuidanceItem[]
 }
 
 export interface SystemSnapshot {
@@ -56,9 +85,19 @@ export interface SystemSnapshot {
   freeBytes: number
   driveCount: number
   queueDepth: number
+  scanQueueDepth: number
+  aiQueueDepth: number
   activeScan: string | null
+  activeAi: string | null
   historySamples: number
   uptimeMinutes: number
+  analysisEngine: string
+  aiEnabled: boolean
+  aiProvider: string
+  aiModel: string | null
+  aiStatus: string
+  aiLastError: string | null
+  aiLastAnalyzedAt: string | null
 }
 
 export interface DuplicateNameGroup {
@@ -77,6 +116,7 @@ export interface CrossDriveSnapshot {
   duplicateTopLevelNames: DuplicateNameGroup[]
   standardizationSuggestions: StandardizationSuggestion[]
   topOpportunities: Opportunity[]
+  summary: string
 }
 
 export interface Snapshot {
